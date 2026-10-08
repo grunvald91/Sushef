@@ -34,7 +34,7 @@ elif [ -e "$current" ]; then
 fi
 
 # Existing .env is preserved. A release only points to the private shared file.
-ln -s "$env_file" "$release/.env"
+ln -sfn "$env_file" "$release/.env"
 chmod 700 "$root" "$root/releases" "$shared" "$backups"
 chmod 600 "$env_file"
 
@@ -85,8 +85,7 @@ for attempt in $(seq 1 12); do
       continue
     fi
   fi
-  info "Bot isn't running steadily. Recent Sushef logs (secrets should remain hidden):"
-  dc logs --tail=25 bot | sed -E 's/(bot[0-9]+:)[A-Za-z0-9_-]+/\1[REDACTED]/g' || true
+  info "Bot is not running steadily. Inspect logs privately on server (never print credentials)."
   if [ -n "$old_release" ] && [ -f "$old_release/compose.yaml" ]; then
     info "Attempting code-only recovery from previous release (no DB downgrade)."
     old_dc up -d --build bot || true
