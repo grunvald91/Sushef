@@ -1,15 +1,17 @@
 """Telegram-интерфейс MVP. Все пользовательские состояния хранятся в БД."""
 from __future__ import annotations
 
+import json
 import logging
 from decimal import Decimal
 from typing import Any
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from .chef import Chef, RecipeFormatError, format_recipe
+from .memory import MEMORY_KINDS, PROFILE_FIELDS, short_memory_context
 from .fermentation import PROCESS_LABELS, fermentation_system_context, intake_text
 from .fermentation_journal import SAFETY_REMINDER, observation_text, parse_observation
 from .protocols import assess_process, get_protocol, list_protocols, protocol_context, protocol_summary
@@ -22,13 +24,7 @@ from .storage import Storage
 logger = logging.getLogger(__name__)
 router = Router(name="telegram")
 
-PREF_LABELS = {
-    "allergens": "Аллергены (если есть)",
-    "excluded": "Не ем",
-    "likes": "Любимые продукты",
-    "equipment": "Кухонная техника",
-    "portions": "Количество порций",
-}
+PREF_LABELS = PROFILE_FIELDS
 
 MODE_PROMPTS = {
     "recipe": "🥘 Перечислите продукты, из которых хочется приготовить блюдо. Добавьте пожелания по времени или вкусу.",
@@ -52,6 +48,7 @@ def main_keyboard() -> InlineKeyboardMarkup:
         [("🥘 Что приготовить?", "mode:recipe"), ("🆘 Спасти блюдо", "mode:rescue")],
         [("📅 Меню на неделю", "mode:plan"), ("👨‍🍳 Готовим вместе", "cook:start")],
         [("❤️ Мои рецепты", "view:favorites"), ("🛒 Покупки", "view:shop")],
+        [("📖 История рецептов", "view:archive"), ("🧠 Моя память", "view:memory")],
         [("📦 Мои продукты", "view:pantry"), ("📆 Моё меню", "view:week")],
         [("🥗 Мой профиль", "view:profile"), ("💬 Спросить шефа", "mode:ask")],
         [("🔬 Микробиология и ферментация", "view:ferment")],
@@ -128,7 +125,10 @@ def profile_keyboard() -> InlineKeyboardMarkup:
     return keyboard([
         [("⚠️ Аллергены", "pref:allergens"), ("🚫 Исключить", "pref:excluded")],
         [("🥑 Люблю", "pref:likes"), ("🍳 Оборудование", "pref:equipment")],
-        [("👥 Порции", "pref:portions")],
+        [("👥 Порции", "pref:portions"), ("🌎 Кухни", "pref:cuisines")],
+        [("🌶 Острота", "pref:spice"), ("🥗 Текстуры", "pref:textures")],
+        [("💰 Бюджет", "pref:budget"), ("⏱ Время", "pref:cook_time")],
+        [("🎓 Уровень", "pref:skill"), ("🧠 Память", "view:memory")],
         [("🏠 Главное меню", "view:main")],
     ])
 
@@ -136,7 +136,7 @@ def profile_keyboard() -> InlineKeyboardMarkup:
 def profile_text(prefs: dict[str, str]) -> str:
     lines = ["🥗 Ваши настройки кухни:"]
     lines.extend(f"• {label}: {prefs.get(key) or 'не указано'}" for key, label in PREF_LABELS.items())
-    lines.append("\nВыбирайте параметр кнопкой. Чтобы очистить значение, отправьте один символ «-».")
+    lines.append("\nДля очистки отдельного поля отправьте «-». Острота: без острого/лёгкая/средняя/острая; уровень: начинающий/уверенный/опытный.")
     return "\n".join(lines)
 
 
@@ -222,7 +222,7 @@ async def help_menu(message: Message) -> None:
             message,
             "👨‍🍳 Сушеф поможет придумать рецепт, спасти блюдо, составить меню "
             "и провести Вас по шагам приготовления.\n\n"
-            "Команды: /start, /menu, /help, /profile, /pantry, /week, /ferment, /reset, /privacy, /delete_me.",
+            "Команды: /start, /menu, /help, /profile, /recipes, /memory, /remember, /export_my_data, /pantry, /week, /ferment, /reset, /privacy, /delete_me.",
             main_keyboard(),
         )
 
@@ -363,6 +363,9 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
     feedback = await storage.recent_feedback(user_id)
     if feedback:
         preferences["recent_cooking_feedback"] = feedback
+    memories = await storage.personal_memories(user_id, limit=10)
+    if memories:
+        preferences["confirmed_kitchen_memory"] = short_memory_context(memories)
 
     if mode.startswith("pref:"):
         key = mode.split(":", 1)[1]
@@ -370,11 +373,12 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
             await storage.set_mode(user_id, "ask")
             await send_text(message, "Параметр не найден. Вернёмся к меню.", main_keyboard())
             return
-        if key == "portions" and text != "-":
-            if not text.isdigit() or not 1 <= int(text) <= 50:
-                await send_text(message, "Укажите количество порций целым числом от 1 до 50 (или «-», чтобы очистить).")
-                return
-        await storage.set_preference(user_id, key, text)
+        try:
+            await storage.set_preference(user_id, key, text)
+        except ValueError as exc:
+            await send_text(message, "Не удалось обновить профиль: " + str(exc) +
+                            "\nОтправьте правильное значение или /cancel.")
+            return
         await storage.set_mode(user_id, "ask")
         updated = await storage.get_user(user_id)
         await send_text(message, "Прекрасно! Настройки обновлены.\n\n" + profile_text(updated["preferences"]), profile_keyboard())
