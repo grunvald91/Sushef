@@ -85,3 +85,47 @@ async def test_new_allergy_invalidates_active_recipe(storage):
     await storage.set_preference(uid, "allergens", "арахис")
     assert (await storage.get_user(uid))["last_recipe"] is None
     assert await storage.current_cooking(uid) is None
+
+
+@pytest.mark.asyncio
+async def test_pantry_isolation_and_full_data_erasure(storage):
+    from decimal import Decimal
+    first, second = 2001, 2002
+    assert await storage.change_pantry(first, "Молоко", "молоко", Decimal("1000"), "мл")
+    assert await storage.change_pantry(second, "Мука", "мука", Decimal("500"), "г")
+    assert len(await storage.pantry(first)) == 1
+    assert len(await storage.pantry(second)) == 1
+    assert await storage.change_pantry(first, "Молоко", "молоко", Decimal("200"), "мл", remove=True)
+    assert (await storage.pantry(first))[0]["quantity"] == "800"
+    assert not await storage.change_pantry(second, "Молоко", "молоко", Decimal("200"), "мл", remove=True)
+    plan = {"days": [{"breakfast": "Каша", "lunch": "Суп", "dinner": "Рис"} for _ in range(7)]}
+    await storage.save_weekly_plan(first, plan)
+    assert await storage.get_weekly_plan(first) == plan
+    assert await storage.get_weekly_plan(second) is None
+    await storage.delete_user(first)
+    assert await storage.pantry(first) == []
+    assert await storage.get_weekly_plan(first) is None
+    assert len(await storage.pantry(second)) == 1
+
+
+@pytest.mark.asyncio
+async def test_pantry_unit_normalization_and_cooking_previous(storage):
+    from decimal import Decimal
+    uid = 3003
+    assert await storage.change_pantry(uid, "Картофель", "картофель", Decimal("500"), "г")
+    assert await storage.change_pantry(uid, "Картофель", "картофель", Decimal("500"), "г")
+    assert (await storage.pantry(uid))[0]["quantity"] == "1000"
+    recipe = {"title": "Жаркое", "steps": ["A", "B", "C"]}
+    await storage.set_recipe(uid, recipe)
+    assert await storage.start_cooking(uid)
+    assert (await storage.advance_cooking(uid))["step_index"] == 1
+    assert (await storage.set_cooking_step(uid, 0))["step_index"] == 0
+
+
+@pytest.mark.asyncio
+async def test_allergen_change_invalidates_weekly_plan(storage):
+    uid = 4004
+    plan = {"days": [{"breakfast": "Яйца", "lunch": "Суп", "dinner": "Каша"} for _ in range(7)]}
+    await storage.save_weekly_plan(uid, plan)
+    await storage.set_preference(uid, "allergens", "яйца")
+    assert await storage.get_weekly_plan(uid) is None
