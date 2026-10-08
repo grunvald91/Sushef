@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from .models import Base, Conversation, CookingSession, Favorite, User
+from .models import Base, Conversation, CookingSession, Favorite, PantryItem, User, WeeklyPlan
 
 
 class Storage:
@@ -61,6 +62,7 @@ class Storage:
             if key in {"allergens", "excluded"} and previous != prefs.get(key):
                 user.last_recipe = None
                 await db.execute(delete(CookingSession).where(CookingSession.user_id == user_id))
+                await db.execute(delete(WeeklyPlan).where(WeeklyPlan.user_id == user_id))
             await db.commit()
 
     async def get_history(self, user_id: int, limit: int = 10) -> list[dict[str, str]]:
@@ -111,13 +113,14 @@ class Storage:
             rows = await db.scalars(select(Favorite).where(Favorite.user_id == user_id).order_by(Favorite.id.desc()).limit(10))
             return [{"id": item.id, "recipe": item.recipe} for item in rows]
 
-    async def select_favorite(self, user_id: int, favorite_id: int) -> dict[str, Any] | None:
+    async def select_favorite(self, user_id: int, favorite_id: int, activate: bool = True) -> dict[str, Any] | None:
         async with self.sessions() as db:
             favorite = await db.get(Favorite, favorite_id)
             if not favorite or favorite.user_id != user_id:
                 return None
-            user = await self._user(db, user_id)
-            user.last_recipe = favorite.recipe
+            if activate:
+                user = await self._user(db, user_id)
+                user.last_recipe = favorite.recipe
             await db.commit()
             return favorite.recipe
 
@@ -170,5 +173,82 @@ class Storage:
             await db.execute(delete(Conversation).where(Conversation.user_id == user_id))
             await db.execute(delete(CookingSession).where(CookingSession.user_id == user_id))
             await db.execute(delete(Favorite).where(Favorite.user_id == user_id))
+            await db.execute(delete(PantryItem).where(PantryItem.user_id == user_id))
+            await db.execute(delete(WeeklyPlan).where(WeeklyPlan.user_id == user_id))
             await db.execute(delete(User).where(User.id == user_id))
             await db.commit()
+
+
+    async def pantry(self, user_id: int) -> list[dict[str, str]]:
+        async with self.sessions() as db:
+            rows = await db.scalars(select(PantryItem).where(PantryItem.user_id == user_id).order_by(PantryItem.name_key, PantryItem.unit))
+            return [{"name_key": item.name_key, "display_name": item.display_name,
+                     "unit": item.unit, "quantity": item.quantity} for item in rows]
+
+    async def change_pantry(self, user_id: int, name: str, name_key: str,
+                            amount: Decimal, unit: str, remove: bool = False) -> bool:
+        """Обновить количество конкретного продукта в одной транзакции.
+
+        Возвращает False, если при удалении такой запас отсутствует.
+        Для SQLite одного процесса достаточно; для конкурентной записи на
+        PostgreSQL потребуется UPSERT/row locking перед масштабированием.
+        """
+        if amount <= 0 or amount > Decimal("100000000"):
+            raise ValueError("Неверное количество")
+        if unit not in {"г", "мл", "шт"}:
+            raise ValueError("Неизвестная единица")
+        async with self.sessions() as db:
+            result = await db.execute(select(PantryItem).where(
+                PantryItem.user_id == user_id,
+                PantryItem.name_key == name_key,
+                PantryItem.unit == unit,
+            ))
+            row = result.scalar_one_or_none()
+            if row is None:
+                if remove:
+                    return False
+                count = await db.scalars(select(PantryItem.id).where(PantryItem.user_id == user_id))
+                if len(list(count)) >= 100:
+                    raise ValueError("Можно хранить не больше 100 позиций")
+                db.add(PantryItem(user_id=user_id, name_key=name_key, display_name=name,
+                                  quantity=str(amount), unit=unit))
+            else:
+                result_amount = Decimal(row.quantity) + (-amount if remove else amount)
+                if result_amount <= 0:
+                    await db.delete(row)
+                else:
+                    row.quantity = str(result_amount)
+                    row.display_name = name
+            await db.commit()
+            return True
+
+    async def clear_pantry(self, user_id: int) -> None:
+        async with self.sessions() as db:
+            await db.execute(delete(PantryItem).where(PantryItem.user_id == user_id))
+            await db.commit()
+
+    async def save_weekly_plan(self, user_id: int, plan: dict[str, Any]) -> None:
+        async with self.sessions() as db:
+            row = await db.get(WeeklyPlan, user_id)
+            if row:
+                row.plan = plan
+                row.created_at = datetime.now(timezone.utc)
+            else:
+                db.add(WeeklyPlan(user_id=user_id, plan=plan))
+            await db.commit()
+
+    async def get_weekly_plan(self, user_id: int) -> dict[str, Any] | None:
+        async with self.sessions() as db:
+            row = await db.get(WeeklyPlan, user_id)
+            return row.plan if row else None
+
+    async def set_cooking_step(self, user_id: int, step_index: int) -> dict[str, Any] | None:
+        async with self.sessions() as db:
+            row = await db.get(CookingSession, user_id)
+            if not row:
+                return None
+            steps = row.recipe.get("steps", [])
+            row.step_index = max(0, min(step_index, max(0, len(steps) - 1)))
+            state = {"recipe": row.recipe, "step_index": row.step_index}
+            await db.commit()
+            return state
