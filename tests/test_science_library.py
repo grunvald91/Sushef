@@ -8,7 +8,7 @@ from sushef.science_library import (
 
 def test_all_scientific_cards_have_traceable_primary_evidence():
     validate_knowledge()
-    assert len(CARDS) == 4
+    assert len(CARDS) == 5
     assert {p.evidence for p in CARDS} == {
         "research_review", "manufacturer_guidance", "scientific_consensus"
     }
@@ -52,10 +52,25 @@ def test_cultures_not_automatically_probiotics():
 
 
 def test_category_listing_does_not_authorize_reference_as_recipe():
-    assert len(list_knowledge("enzymes")) == 2
+    assert len(list_knowledge("enzymes")) == 3
     assert len(list_knowledge("koji")) == 1
     assert len(list_knowledge("cultures")) == 1
     assert list_knowledge("none") == ()
     assert get_knowledge("unknown") is None
     with pytest.raises(ValueError):
         knowledge_context("unknown")
+
+
+def test_amylase_card_is_not_pectinase_or_arbitrary_cooking_dose():
+    amylase = get_knowledge("novonesis-amylase-ag-300-l")
+    assert amylase.category == "enzymes"
+    assert amylase.home_protocol_authorized is False
+    conditions = " ".join(amylase.source_conditions)
+    assert "300 AGU/мл" in conditions
+    assert "20–60 мл на 1000 л" in conditions
+    assert "50–55 °C" in conditions
+    assert "1–2 часов" in conditions
+    assert "Novonesis" in amylase.publisher
+    assert "12 °Brix" in conditions
+    assert "сока" in amylase.specific_application
+    assert "АГУ" not in conditions  # Don't translate industry activity units.
