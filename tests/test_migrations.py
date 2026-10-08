@@ -1,4 +1,5 @@
 """Offline migration regression tests; no GitHub Actions or ClaudeHub required."""
+import json
 import os
 import sqlite3
 import subprocess
@@ -102,7 +103,7 @@ def test_legacy_current_recipe_is_backfilled_without_erasing_original(tmp_path):
     archived = con.execute(
         "SELECT recipe,origin FROM recipe_archive WHERE user_id=77"
     ).fetchone()
-    assert '"Каша"' in original
-    assert '"Каша"' in archived[0]
+    assert json.loads(original)["title"] == "Каша"
+    assert json.loads(archived[0]) == json.loads(original)
     assert archived[1] == "legacy_last"
     con.close()
