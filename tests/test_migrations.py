@@ -25,7 +25,7 @@ def test_fresh_db_alembic_builds_memory_and_archive_tables(tmp_path):
     )}
     assert {"users", "personal_memories", "recipe_archive",
             "fermentation_batches", "alembic_version"}.issubset(tables)
-    assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0001_memory"
+    assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0002_timers"
     con.close()
 
 
@@ -53,6 +53,30 @@ def test_old_fermentation_rows_survive_migration_and_upgrade_is_repeatable(tmp_p
     ).fetchone()
     assert row == ("Наша капуста", "", "")
     assert con.execute("SELECT count(*) FROM recipe_archive").fetchone()[0] == 0
+    con.close()
+
+
+def test_timers_table_exists_after_upgrade_and_upgrade_is_idempotent(tmp_path):
+    path = tmp_path / "timers.db"
+    upgrade(path)
+    upgrade(path)
+    con = sqlite3.connect(path)
+    columns = {row[1] for row in con.execute("PRAGMA table_info(cooking_timers)")}
+    assert {"user_id", "chat_id", "recipe_title", "step_index",
+            "label", "minutes", "due_at_ts", "status",
+            "retry_at_ts", "lease_until_ts", "attempts"}.issubset(columns)
+    con.execute(
+        "INSERT INTO cooking_timers "
+        "(user_id,chat_id,recipe_title,step_index,label,minutes,"
+        "due_at_ts,status,lease_until_ts,retry_at_ts,attempts,created_at) "
+        "VALUES (10,10,'Суп',1,'Перемешать',5,99999,'active',0,0,0,CURRENT_TIMESTAMP)"
+    )
+    con.commit()
+    con.close()
+    upgrade(path)
+    con = sqlite3.connect(path)
+    assert con.execute("SELECT count(*) FROM cooking_timers").fetchone()[0] == 1
+    assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0002_timers"
     con.close()
 
 
