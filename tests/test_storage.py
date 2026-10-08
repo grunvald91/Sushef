@@ -129,3 +129,19 @@ async def test_allergen_change_invalidates_weekly_plan(storage):
     await storage.save_weekly_plan(uid, plan)
     await storage.set_preference(uid, "allergens", "яйца")
     assert await storage.get_weekly_plan(uid) is None
+
+
+@pytest.mark.asyncio
+async def test_feedback_is_personal_and_deleted(storage):
+    uid, other = 5123, 5124
+    assert not await storage.rate_last_recipe(uid, "great")
+    recipe = {"title": "Курица", "steps": ["Готовить"]}
+    await storage.set_recipe(uid, recipe)
+    assert await storage.rate_last_recipe(uid, "good")
+    assert await storage.rate_last_recipe(uid, "dry")
+    assert len(await storage.recent_feedback(uid)) == 2
+    assert await storage.recent_feedback(other) == []
+    await storage.delete_user(uid)
+    assert await storage.recent_feedback(uid) == []
+    with pytest.raises(ValueError):
+        await storage.rate_last_recipe(other, "fake-outcome")
