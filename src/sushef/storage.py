@@ -485,17 +485,30 @@ class Storage:
             raise ValueError(f"Таймер должен длиться {MIN_MINUTES}–{MAX_MINUTES} минут")
         if chat_id != user_id:
             raise ValueError("Таймер можно запускать только в личном чате")
-        if not label or len(label) > 120:
+        if not label.strip() or len(label.strip()) > 120:
             raise ValueError("Неверная подпись таймера")
         now_ts = int(time()) if now_ts is None else now_ts
         async with self.sessions() as db:
             cooking = await db.get(CookingSession, user_id)
             if cooking is None or cooking.step_index >= len(cooking.recipe.get("steps", [])):
                 raise ValueError("Для запуска таймера начните пошаговое приготовление")
-            current = (await db.scalars(select(CookingTimer.id).where(
+            # PostgreSQL row lock serializes simultaneous taps from the same
+            # user, so both the idempotency check and timer cap are respected.
+            await db.execute(select(User.id).where(
+                User.id == user_id
+            ).with_for_update())
+            current = (await db.scalars(select(CookingTimer).where(
                 CookingTimer.user_id == user_id,
                 CookingTimer.status.in_(("active", "sending")),
             ))).all()
+            duplicate = next((
+                t for t in current
+                if t.step_index == cooking.step_index and t.minutes == minutes
+                and t.label == label.strip()
+                and t.recipe_title == str(cooking.recipe.get("title", "Блюдо"))[:180]
+            ), None)
+            if duplicate is not None:
+                return self._timer_dict(duplicate)
             if len(current) >= MAX_ACTIVE_TIMERS:
                 raise ValueError(f"Одновременно разрешено не больше {MAX_ACTIVE_TIMERS} таймеров")
             record = CookingTimer(
