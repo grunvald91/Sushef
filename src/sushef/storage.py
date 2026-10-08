@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from .models import Base, Conversation, CookingSession, Favorite, PantryItem, RecipeFeedback, User, WeeklyPlan
+from .models import Base, Conversation, CookingSession, Favorite, FermentationBatch, FermentationReading, PantryItem, RecipeFeedback, User, WeeklyPlan
 
 
 class Storage:
@@ -186,6 +186,8 @@ class Storage:
             await db.execute(delete(Favorite).where(Favorite.user_id == user_id))
             await db.execute(delete(PantryItem).where(PantryItem.user_id == user_id))
             await db.execute(delete(WeeklyPlan).where(WeeklyPlan.user_id == user_id))
+            await db.execute(delete(FermentationReading).where(FermentationReading.user_id == user_id))
+            await db.execute(delete(FermentationBatch).where(FermentationBatch.user_id == user_id))
             await db.execute(delete(RecipeFeedback).where(RecipeFeedback.user_id == user_id))
             await db.execute(delete(User).where(User.id == user_id))
             await db.commit()
@@ -295,3 +297,95 @@ class Storage:
                 .order_by(RecipeFeedback.id.desc()).limit(10)
             )
             return [{"dish": row.recipe_title, "outcome": row.outcome} for row in rows]
+
+
+    async def create_fermentation_batch(self, user_id: int, category: str, name: str) -> int:
+        from .fermentation import PROCESS_LABELS
+        if category not in PROCESS_LABELS:
+            raise ValueError("Неизвестная категория")
+        if not 2 <= len(name.strip()) <= 120:
+            raise ValueError("Название должно содержать 2–120 символов")
+        async with self.sessions() as db:
+            active = (await db.scalars(
+                select(FermentationBatch.id).where(
+                    FermentationBatch.user_id == user_id, FermentationBatch.finished.is_(False))
+            )).all()
+            if len(active) >= 10:
+                raise ValueError("Одновременно можно вести не больше 10 партий")
+            row = FermentationBatch(user_id=user_id, category=category,
+                                    name=name.strip(), finished=False)
+            db.add(row)
+            await db.commit()
+            return row.id
+
+    async def list_fermentation_batches(self, user_id: int) -> list[dict[str, Any]]:
+        async with self.sessions() as db:
+            items = (await db.scalars(
+                select(FermentationBatch)
+                .where(FermentationBatch.user_id == user_id)
+                .order_by(FermentationBatch.id.desc()).limit(20)
+            )).all()
+            return [{"id": r.id, "name": r.name, "category": r.category,
+                     "finished": r.finished, "started_at": str(r.started_at)}
+                    for r in items]
+
+    async def fermentation_batch(self, user_id: int, batch_id: int) -> dict[str, Any] | None:
+        async with self.sessions() as db:
+            row = await db.get(FermentationBatch, batch_id)
+            if row is None or row.user_id != user_id:
+                return None
+            readings = (await db.scalars(
+                select(FermentationReading)
+                .where(FermentationReading.batch_id == batch_id,
+                       FermentationReading.user_id == user_id)
+                .order_by(FermentationReading.id.desc()).limit(10)
+            )).all()
+            return {
+                "id": row.id, "name": row.name, "category": row.category,
+                "finished": row.finished, "started_at": str(row.started_at),
+                "readings": [{"temperature_c": r.temperature_c, "ph": r.ph,
+                              "note": r.note, "observed_at": str(r.observed_at)}
+                             for r in reversed(readings)]
+            }
+
+    async def log_fermentation(self, user_id: int, batch_id: int,
+                               temperature_c: str | None, ph: str | None, note: str) -> bool:
+        async with self.sessions() as db:
+            row = await db.get(FermentationBatch, batch_id)
+            if row is None or row.user_id != user_id or row.finished:
+                return False
+            ids = (await db.scalars(
+                select(FermentationReading.id).where(
+                    FermentationReading.user_id == user_id,
+                    FermentationReading.batch_id == batch_id
+                )
+            )).all()
+            if len(ids) >= 100:
+                raise ValueError("В партии уже 100 измерений. Сохраните архив перед новой партией.")
+            db.add(FermentationReading(
+                batch_id=batch_id, user_id=user_id,
+                temperature_c=temperature_c, ph=ph, note=note[:500]
+            ))
+            await db.commit()
+            return True
+
+    async def finish_fermentation_batch(self, user_id: int, batch_id: int) -> bool:
+        async with self.sessions() as db:
+            row = await db.get(FermentationBatch, batch_id)
+            if row is None or row.user_id != user_id:
+                return False
+            row.finished = True
+            await db.commit()
+            return True
+
+    async def delete_fermentation_batch(self, user_id: int, batch_id: int) -> bool:
+        async with self.sessions() as db:
+            row = await db.get(FermentationBatch, batch_id)
+            if row is None or row.user_id != user_id:
+                return False
+            await db.execute(delete(FermentationReading).where(
+                FermentationReading.batch_id == batch_id, FermentationReading.user_id == user_id
+            ))
+            await db.delete(row)
+            await db.commit()
+            return True
