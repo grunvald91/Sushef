@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import logging
-from time import time
 from decimal import Decimal
 from typing import Any
 
@@ -409,7 +408,11 @@ async def reset_dialog(message: Message, storage: Storage) -> None:
     if not await private_only(message) or not message.from_user:
         return
     await storage.clear_chat(message.from_user.id)
-    await send_text(message, "Диалог очищен. Ваш профиль и любимые рецепты сохранены. 🧑‍🍳", main_keyboard())
+    await send_text(
+        message,
+        "Диалог и активная готовка очищены, действующие таймеры отменены. "
+        "Ваш профиль и любимые рецепты сохранены. 🧑‍🍳", main_keyboard()
+    )
 
 
 @router.message(Command("privacy"))
