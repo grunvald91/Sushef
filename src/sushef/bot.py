@@ -376,6 +376,30 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
         await send_text(message, "Прекрасно! Настройки обновлены.\n\n" + profile_text(updated["preferences"]), profile_keyboard())
         return
 
+    if mode.startswith("pnew:"):
+        pid = mode.split(":", 1)[1]
+        p = get_protocol(pid)
+        if not p:
+            await storage.set_mode(user_id, "ask")
+            await send_text(message, "Рецептура не найдена.", fermentation_keyboard())
+            return
+        try:
+            batch_id = await storage.create_fermentation_batch(
+                user_id, p.category, text, p.source_url, p.id, p.revision
+            )
+        except ValueError as exc:
+            await send_text(message, "Не удалось создать журнал: " + str(exc))
+            return
+        await storage.set_mode(user_id, "ask")
+        batch = await storage.fermentation_batch(user_id, batch_id)
+        await send_text(
+            message,
+            "📓 Журнал привязан к исходному протоколу, но Сушеф не удостоверяет "
+            "безопасность Вашей партии.\n\n" + fermentation_batch_text(batch),
+            fermentation_batch_keyboard(batch_id, False),
+        )
+        return
+
     if mode.startswith("fnew:"):
         category = mode.split(":", 1)[1]
         try:
@@ -484,6 +508,15 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
         else:
             history = await storage.get_history(user_id)
             context = ""
+            if mode.startswith("protocol:"):
+                pid = mode.split(":", 1)[1]
+                p = get_protocol(pid)
+                if p:
+                    context = protocol_context(pid)
+                    mode = "ferment"
+                else:
+                    await storage.set_mode(user_id, "ask")
+                    mode = "ask"
             if mode.startswith("ferment:"):
                 category = mode.split(":", 1)[1]
                 if category in PROCESS_LABELS:
