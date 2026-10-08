@@ -13,6 +13,7 @@ from .chef import Chef, RecipeFormatError, format_recipe
 from .fermentation import PROCESS_LABELS, fermentation_system_context, intake_text
 from .fermentation_journal import SAFETY_REMINDER, observation_text, parse_observation
 from .protocols import assess_process, get_protocol, list_protocols, protocol_context, protocol_summary
+from .science_library import get_knowledge, knowledge_context, knowledge_text, list_knowledge
 from .pantry import format_quantity, format_shopping_comparison, parse_product_line
 from .weekly import DAY_NAMES, MEAL_NAMES, WeeklyPlanError, format_day, format_full_week
 from .config import Settings
@@ -78,6 +79,7 @@ def fermentation_keyboard() -> InlineKeyboardMarkup:
         [("🦠 Полезные пищевые культуры", "ferment:guide:cultures")],
         [("🔬 Другие процессы", "ferment:guide:other")],
         [("📚 Каталог протоколов", "protocol:list")],
+        [("🧬 Наука: кодзи, ферменты и культуры", "science:list")],
         [("📓 Журнал ферментации", "ferment:list")],
         [("🏠 Главное меню", "view:main")],
     ])
@@ -510,6 +512,15 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
         else:
             history = await storage.get_history(user_id)
             context = ""
+            if mode.startswith("science:"):
+                cid = mode.split(":", 1)[1]
+                card = get_knowledge(cid)
+                if card:
+                    context = knowledge_context(cid)
+                    mode = "ferment"
+                else:
+                    await storage.set_mode(user_id, "ask")
+                    mode = "ask"
             if mode.startswith("protocol:"):
                 pid = mode.split(":", 1)[1]
                 p = get_protocol(pid)
@@ -582,6 +593,51 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
             "Выбирайте культурный процесс, пищевой фермент или журнал партии. "
             "При неопределённости лучше остановиться и проверить протокол.",
             fermentation_keyboard(),
+        )
+        return
+
+    if data == "science:list":
+        cards = list_knowledge()
+        buttons = [[(card.title[:49], f"science:view:{card.id}")] for card in cards]
+        buttons.append([("📚 К протоколам", "protocol:list"), ("🔬 Лаборатория", "view:ferment")])
+        await send_text(
+            message, "🧬 Справочные материалы с научными источниками и "
+            "документацией конкретных ферментных препаратов.\n\n"
+            "⚠️ Эти карточки НЕ являются автоматически разрешёнными домашними "
+            "процедурами. В частности параметры исследования кодзи и дозы "
+            "для винодельческого сока нельзя переносить на другую еду.",
+            keyboard(buttons),
+        )
+        return
+
+    if data.startswith("science:view:"):
+        cid = data.split(":", 2)[2]
+        card = get_knowledge(cid)
+        if not card:
+            await send_text(message, "Карточка не найдена.", fermentation_keyboard())
+            return
+        await send_text(
+            message, knowledge_text(card),
+            keyboard([[("❓ Спросить об источнике", f"science:ask:{card.id}")],
+                      [("🧬 Ко всем материалам", "science:list"),
+                       ("🔬 Лаборатория", "view:ferment")]]),
+        )
+        return
+
+    if data.startswith("science:ask:"):
+        cid = data.split(":", 2)[2]
+        card = get_knowledge(cid)
+        if not card:
+            return
+        await storage.set_mode(user_id, f"science:{card.id}")
+        await send_text(
+            message,
+            f"🧬 Вы изучаете «{card.title}». "
+            "Спросите о микроорганизмах, механизме ферментов, ограничениях "
+            "или конкретной публикации. Я не стану придумывать домашнюю "
+            "инструкцию вместо полноценного протокола.",
+            keyboard([[("📖 Показать карточку", f"science:view:{card.id}")],
+                      [("🧬 Научная библиотека", "science:list")]]),
         )
         return
 

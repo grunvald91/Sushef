@@ -48,6 +48,14 @@ def test_documented_protocol_navigation_exists():
     from sushef.protocols import PROTOCOLS
     controls = {b.callback_data for row in fermentation_keyboard().inline_keyboard for b in row}
     assert "protocol:list" in controls
-    assert len(PROTOCOLS) >= 3
+    assert "science:list" in controls
+    assert len(PROTOCOLS) >= 4
     journal = {b.callback_data for row in fermentation_batch_keyboard(123, False).inline_keyboard for b in row}
     assert "protocol:check:123" in journal
+
+
+def test_science_ids_fit_telegram_callback_limit():
+    from sushef.science_library import CARDS
+    for item in CARDS:
+        assert len(("science:view:" + item.id).encode("utf-8")) <= 64
+        assert len(("science:ask:" + item.id).encode("utf-8")) <= 64
