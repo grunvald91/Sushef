@@ -82,6 +82,8 @@ class FermentationBatch(Base):
     category: Mapped[str] = mapped_column(String(20), nullable=False)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     protocol_source: Mapped[str] = mapped_column(String(240), default="", nullable=False)
+    protocol_id: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    protocol_revision: Mapped[str] = mapped_column(String(32), default="", nullable=False)
     finished: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
