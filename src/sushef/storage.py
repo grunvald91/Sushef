@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from .models import Base, Conversation, CookingSession, Favorite, PantryItem, User, WeeklyPlan
@@ -81,17 +81,28 @@ class Storage:
             await db.commit()
 
     async def use_quota(self, user_id: int, daily_limit: int) -> bool:
+        """Атомарное резервирование одного запроса к ИИ на календарный день UTC.
+
+        При сбое модели резервирование не возвращается: консервативный контроль
+        расходов. SQLite рассчитан на один бот; в PostgreSQL UPDATE выполняется
+        атомарно даже при конкурентных задачах.
+        """
         today = datetime.now(timezone.utc).date().isoformat()
         async with self.sessions() as db:
             user = await self._user(db, user_id)
             if user.usage_day != today:
                 user.usage_day, user.usage_count = today, 0
-            if user.usage_count >= daily_limit:
-                await db.commit()
-                return False
-            user.usage_count += 1
+            await db.flush()
+            result = await db.execute(
+                update(User)
+                .where(User.id == user_id, User.usage_day == today,
+                       User.usage_count < daily_limit)
+                .values(usage_count=User.usage_count + 1)
+                .execution_options(synchronize_session=False)
+            )
+            allowed = result.rowcount == 1
             await db.commit()
-            return True
+            return allowed
 
     async def set_recipe(self, user_id: int, recipe: dict[str, Any]) -> None:
         async with self.sessions() as db:
