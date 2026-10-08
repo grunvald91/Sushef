@@ -66,11 +66,14 @@ def recipe_keyboard() -> InlineKeyboardMarkup:
 
 def fermentation_keyboard() -> InlineKeyboardMarkup:
     return keyboard([
+        [("❄️ Холодная ферментация", "ferment:guide:cold")],
+        [("🌡 Тёплая/горячая ферментация", "ferment:guide:warm")],
         [("🥬 Молочнокислые овощи", "ferment:guide:vegetables")],
         [("🥛 Йогурт и молочные", "ferment:guide:dairy")],
         [("🍞 Закваски и тесто", "ferment:guide:sourdough")],
         [("🍄 Кодзи и пищевые грибные культуры", "ferment:guide:koji")],
         [("🧪 Внешние пищевые ферменты", "ferment:guide:enzymes")],
+        [("🦠 Полезные пищевые культуры", "ferment:guide:cultures")],
         [("🔬 Другие процессы", "ferment:guide:other")],
         [("📓 Журнал ферментации", "ferment:list")],
         [("🏠 Главное меню", "view:main")],
