@@ -93,7 +93,12 @@ def fermentation_batch_keyboard(batch_id: int, finished: bool) -> InlineKeyboard
 def fermentation_batch_text(batch: dict) -> str:
     label = PROCESS_LABELS.get(batch["category"], "Неизвестный процесс")
     state = "завершено наблюдение" if batch["finished"] else "наблюдение продолжается"
-    lines = [f"📓 {batch['name']}", label, f"Статус: {state}", ""]
+    lines = [f"📓 {batch['name']}", label, f"Статус: {state}"]
+    if batch.get("protocol_source"):
+        lines.append("Источник по словам пользователя (не проверен): " + batch["protocol_source"])
+    else:
+        lines.append("⚠️ Проверенный источник технологии не указан.")
+    lines.append("")
     for observation in batch["readings"]:
         lines.append(f"• {observation['observed_at'][:16]}: {observation_text(observation)}")
     if not batch["readings"]:
@@ -369,7 +374,9 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
     if mode.startswith("fnew:"):
         category = mode.split(":", 1)[1]
         try:
-            batch_id = await storage.create_fermentation_batch(user_id, category, text)
+            name, delimiter, source = text.partition("|")
+            batch_id = await storage.create_fermentation_batch(
+                user_id, category, name.strip(), source.strip() if delimiter else "")
         except ValueError as exc:
             await send_text(message, "Не получилось создать партию: " + str(exc))
             return
@@ -553,8 +560,11 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         if category not in PROCESS_LABELS:
             return
         await storage.set_mode(user_id, f"fnew:{category}")
-        await send_text(message, "📓 Как назвать партию? Например: «Капуста 08.10». "
-                        "Партия — только журнал наблюдений, а не удостоверение безопасности.")
+        await send_text(message, "📓 Введите название и, если есть, проверенный источник:\n"
+                        "Капуста 08.10 | NCHFP sauerkraut\n\n"
+                        "После знака «|» пишите название или ссылку на конкретный протокол. "
+                        "Сушеф сохранит эту информацию, но не будет автоматически считать "
+                        "источник или продукт безопасным.")
         return
 
     if data == "ferment:list":
