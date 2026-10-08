@@ -8,11 +8,12 @@ from sushef.protocols import (
 )
 
 
-def test_versioned_catalog_has_three_traceable_source_documents():
+def test_versioned_catalog_has_four_traceable_source_documents():
     validate_catalog()
-    assert len(PROTOCOLS) >= 3
+    assert len(PROTOCOLS) >= 4
     assert {p.id for p in PROTOCOLS} == {
-        "nchfp-sauerkraut", "nchfp-dill-pickles", "usu-yogurt"
+        "nchfp-sauerkraut", "nchfp-dill-pickles", "usu-yogurt",
+        "kab-sourdough-starter"
     }
     assert len({p.id for p in PROTOCOLS}) == len(PROTOCOLS)
     for p in PROTOCOLS:
@@ -150,3 +151,24 @@ def test_unknown_humidity_and_enzyme_activity_never_fabricated():
         assert "Влажность: не регламентирована" in card
         assert "Ферментная активность: не задана" in card
         assert "Оборудование" in card
+
+
+def test_sourdough_starter_is_source_documented_only_for_baking():
+    card = get_protocol("kab-sourdough-starter")
+    assert card.source_url == "https://www.kingarthurbaking.com/learn/guides/sourdough/create"
+    assert card.category == "sourdough"
+    assert card.status == "source_documented"
+    assert any("113 г" in item for item in card.ingredients)
+    assert any("113:113:113" in limit for limit in card.critical_limits)
+    assert any(stage.code == "feed" and "12 часов" in stage.duration for stage in card.stages)
+    assert any("сырую закваску не пробовать" in s for s in card.restrictions)
+    assert all(stage.temperature_min_f is None for stage in card.stages)
+    assert "проверенный источник" not in " ".join(card.ingredients).lower()
+
+
+def test_old_fermentation_protocols_remain_unchanged():
+    for pid in ("nchfp-sauerkraut", "nchfp-dill-pickles", "usu-yogurt"):
+        card = get_protocol(pid)
+        assert card.status == "source_documented"
+        assert card.source_url.startswith("https://")
+    assert "sourdough_baking" in PENDING_TOPICS
