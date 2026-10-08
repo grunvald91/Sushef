@@ -50,11 +50,17 @@ class Storage:
         async with self.sessions() as db:
             user = await self._user(db, user_id)
             prefs = dict(user.preferences or {})
+            previous = prefs.get(key)
             if value.strip() == "-":
                 prefs.pop(key, None)
             else:
                 prefs[key] = value.strip()[:500]
             user.preferences = prefs
+            # При изменении аллергенов и исключений старый рецепт и текущая готовка
+            # больше не считаются подходящими для профиля.
+            if key in {"allergens", "excluded"} and previous != prefs.get(key):
+                user.last_recipe = None
+                await db.execute(delete(CookingSession).where(CookingSession.user_id == user_id))
             await db.commit()
 
     async def get_history(self, user_id: int, limit: int = 10) -> list[dict[str, str]]:
