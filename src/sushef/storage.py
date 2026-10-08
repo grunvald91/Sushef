@@ -299,12 +299,14 @@ class Storage:
             return [{"dish": row.recipe_title, "outcome": row.outcome} for row in rows]
 
 
-    async def create_fermentation_batch(self, user_id: int, category: str, name: str) -> int:
+    async def create_fermentation_batch(self, user_id: int, category: str, name: str, protocol_source: str = "") -> int:
         from .fermentation import PROCESS_LABELS
         if category not in PROCESS_LABELS:
             raise ValueError("Неизвестная категория")
         if not 2 <= len(name.strip()) <= 120:
             raise ValueError("Название должно содержать 2–120 символов")
+        if len(protocol_source) > 240:
+            raise ValueError("Источник должен содержать не более 240 символов")
         async with self.sessions() as db:
             active = (await db.scalars(
                 select(FermentationBatch.id).where(
@@ -313,7 +315,8 @@ class Storage:
             if len(active) >= 10:
                 raise ValueError("Одновременно можно вести не больше 10 партий")
             row = FermentationBatch(user_id=user_id, category=category,
-                                    name=name.strip(), finished=False)
+                                    name=name.strip(), protocol_source=protocol_source.strip(),
+                                    finished=False)
             db.add(row)
             await db.commit()
             return row.id
@@ -326,7 +329,8 @@ class Storage:
                 .order_by(FermentationBatch.id.desc()).limit(20)
             )).all()
             return [{"id": r.id, "name": r.name, "category": r.category,
-                     "finished": r.finished, "started_at": str(r.started_at)}
+                     "finished": r.finished, "started_at": str(r.started_at),
+                     "protocol_source": r.protocol_source}
                     for r in items]
 
     async def fermentation_batch(self, user_id: int, batch_id: int) -> dict[str, Any] | None:
@@ -343,6 +347,7 @@ class Storage:
             return {
                 "id": row.id, "name": row.name, "category": row.category,
                 "finished": row.finished, "started_at": str(row.started_at),
+                "protocol_source": row.protocol_source,
                 "readings": [{"temperature_c": r.temperature_c, "ph": r.ph,
                               "note": r.note, "observed_at": str(r.observed_at)}
                              for r in reversed(readings)]
