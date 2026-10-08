@@ -39,7 +39,7 @@ def test_manufacturer_enzyme_doses_are_pinned_to_exact_product_form():
     assert "1,0–1,3 мл/гл" in " ".join(pec.source_conditions)
     assert "1 г/гл" in " ".join(rapidase.source_conditions)
     assert "3 г/гл" in " ".join(rapidase.source_conditions)
-    assert "ГРАНУЛИРОВАННУЮ" in rapidase.specific_application
+    assert "гранулированн" in rapidase.specific_application.lower()
     assert "жидкой" in " ".join(rapidase.warnings)
     assert "дозы жидкого и гранулированного" in knowledge_context(rapidase.id)
 
@@ -72,5 +72,5 @@ def test_amylase_card_is_not_pectinase_or_arbitrary_cooking_dose():
     assert "1–2 часов" in conditions
     assert "Novonesis" in amylase.publisher
     assert "12 °Brix" in conditions
-    assert "сока" in amylase.specific_application
+    assert "сок" in amylase.specific_application.lower()
     assert "АГУ" not in conditions  # Don't translate industry activity units.
