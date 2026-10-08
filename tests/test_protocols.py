@@ -138,3 +138,15 @@ def test_no_red_flags_still_asks_to_check_original_source():
     )
     assert assessment.status == "CHECK_SOURCE"
     assert all(x not in assessment.notes for x in ("SAFE", "EDIBLE"))
+
+
+def test_unknown_humidity_and_enzyme_activity_never_fabricated():
+    for protocol in PROTOCOLS:
+        assert protocol.microorganisms_or_enzymes
+        assert protocol.equipment
+        assert protocol.humidity_target is None
+        assert protocol.enzyme_activity is None
+        card = protocol_summary(protocol)
+        assert "Влажность: не регламентирована" in card
+        assert "Ферментная активность: не задана" in card
+        assert "Оборудование" in card
