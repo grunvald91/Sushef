@@ -70,3 +70,18 @@ async def test_history_bounded(storage):
     history = await storage.get_history(uid, limit=100)
     assert len(history) == 40
     assert history[0]["content"] == "Вопрос 5"
+
+
+@pytest.mark.asyncio
+async def test_new_allergy_invalidates_active_recipe(storage):
+    uid = 456
+    recipe = {
+        "title": "Салат", "time_minutes": 5, "servings": 1,
+        "ingredients": [{"name": "Арахис", "amount": "20 г"}],
+        "steps": ["Смешать"], "safety_notes": [],
+    }
+    await storage.set_recipe(uid, recipe)
+    assert await storage.start_cooking(uid)
+    await storage.set_preference(uid, "allergens", "арахис")
+    assert (await storage.get_user(uid))["last_recipe"] is None
+    assert await storage.current_cooking(uid) is None
