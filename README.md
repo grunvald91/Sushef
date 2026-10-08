@@ -73,3 +73,9 @@ pytest -q
 API ClaudeHub: [claudehub.fun](https://claudehub.fun/), официальный клиент [Anthropic SDK](https://platform.claude.com/docs/en/api/sdks/python); Telegram-фреймворк: [aiogram](https://docs.aiogram.dev/en/latest/).
 
 Никаких GitHub Actions по умолчанию: тесты и деплой выполняются локально или на сервере. Перед массовыми/платными запускaми необходимо явное согласование.
+
+## Первый запуск без GitHub Actions
+
+Если ключи занесены в **GitHub Settings → Secrets and variables → Actions**, они не появляются автоматически на сервере. Их значения доступны только заданию Actions, которое явно использует секрет. Чтобы не тратить минуты Actions, запустите бота на сервере с защищённым локальным файлом `.env`, **не коммитьте его в Git**. Подробности в [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
+Для начальной установки без PostgreSQL используйте `docker compose -f compose.sqlite.yaml up -d --build`. Это один контейнер и постоянный том SQLite. Для штатного запуска PostgreSQL по-прежнему доступен через `compose.yaml`.

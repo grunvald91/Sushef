@@ -1,0 +1,13 @@
+# Первый запуск с SQLite: отдельная база без пароля PostgreSQL.
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: sqlite+aiosqlite:////home/sushef/sushef.db
+    volumes:
+      - sushef-data:/home/sushef
+    stop_grace_period: 30s
+volumes:
+  sushef-data:
