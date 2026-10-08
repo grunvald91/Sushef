@@ -97,3 +97,25 @@ class FermentationReading(Base):
     ph: Mapped[str | None] = mapped_column(String(16), nullable=True)
     note: Mapped[str] = mapped_column(String(500), default="", nullable=False)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class RecipeArchive(Base):
+    """Каждый созданный рецепт; избранное остаётся отдельной пользовательской коллекцией."""
+    __tablename__ = "recipe_archive"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    recipe: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    origin: Mapped[str] = mapped_column(String(32), default="generated", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PersonalMemory(Base):
+    """Подтверждённые пользователем долгосрочные факты и ожидающие подтверждения."""
+    __tablename__ = "personal_memories"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    value: Mapped[str] = mapped_column(String(500), nullable=False)
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default="pending")
+    source: Mapped[str] = mapped_column(String(24), nullable=False, default="explicit_user")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

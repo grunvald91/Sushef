@@ -7,7 +7,8 @@ from typing import Any
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from .models import Base, Conversation, CookingSession, Favorite, FermentationBatch, FermentationReading, PantryItem, RecipeFeedback, User, WeeklyPlan
+from .models import Base, Conversation, CookingSession, Favorite, FermentationBatch, FermentationReading, PantryItem, PersonalMemory, RecipeArchive, RecipeFeedback, User, WeeklyPlan
+from .memory import PROFILE_FIELDS, validate_memory, validate_preference
 
 
 class Storage:
@@ -42,20 +43,19 @@ class Storage:
         async with self.sessions() as db:
             user = await self._user(db, user_id)
             user.mode = mode
-            await db.execute(delete(Conversation).where(Conversation.user_id == user_id))
+            # Переключение режима НЕ удаляет историю; очистка только через /reset.
             await db.commit()
 
     async def set_preference(self, user_id: int, key: str, value: str) -> None:
-        if key not in {"allergens", "excluded", "likes", "equipment", "portions"}:
-            raise ValueError("Unknown preference")
+        value = validate_preference(key, value)
         async with self.sessions() as db:
             user = await self._user(db, user_id)
             prefs = dict(user.preferences or {})
             previous = prefs.get(key)
-            if value.strip() == "-":
+            if value == "-":
                 prefs.pop(key, None)
             else:
-                prefs[key] = value.strip()[:500]
+                prefs[key] = value
             user.preferences = prefs
             # При изменении аллергенов и исключений старый рецепт и текущая готовка
             # больше не считаются подходящими для профиля.
@@ -108,6 +108,7 @@ class Storage:
         async with self.sessions() as db:
             user = await self._user(db, user_id)
             user.last_recipe = recipe
+            db.add(RecipeArchive(user_id=user_id, recipe=recipe, origin="generated"))
             await db.commit()
 
     async def save_favorite(self, user_id: int) -> bool:
@@ -189,6 +190,8 @@ class Storage:
             await db.execute(delete(FermentationReading).where(FermentationReading.user_id == user_id))
             await db.execute(delete(FermentationBatch).where(FermentationBatch.user_id == user_id))
             await db.execute(delete(RecipeFeedback).where(RecipeFeedback.user_id == user_id))
+            await db.execute(delete(RecipeArchive).where(RecipeArchive.user_id == user_id))
+            await db.execute(delete(PersonalMemory).where(PersonalMemory.user_id == user_id))
             await db.execute(delete(User).where(User.id == user_id))
             await db.commit()
 
@@ -299,6 +302,24 @@ class Storage:
             return [{"dish": row.recipe_title, "outcome": row.outcome} for row in rows]
 
 
+    async def feedback_patterns(self, user_id: int) -> dict[str, Any]:
+        """Только наблюдаемые повторения в оценках, не выдуманные вкусы."""
+        async with self.sessions() as db:
+            rows = (await db.scalars(
+                select(RecipeFeedback).where(RecipeFeedback.user_id == user_id)
+                .order_by(RecipeFeedback.id.desc()).limit(50)
+            )).all()
+        issues: dict[str, int] = {}
+        for row in rows:
+            if row.outcome in {"salty", "dry", "spicy", "disliked"}:
+                issues[row.outcome] = issues.get(row.outcome, 0) + 1
+        return {
+            "observations": len(rows),
+            "repeated_issues": {name: n for name, n in issues.items() if n >= 2},
+            "note": "Это повторения оценок блюд, НЕ подтверждённые постоянные предпочтения.",
+        }
+
+
     async def create_fermentation_batch(
         self, user_id: int, category: str, name: str, protocol_source: str = "",
         protocol_id: str = "", protocol_revision: str = ""
@@ -407,3 +428,150 @@ class Storage:
             await db.delete(row)
             await db.commit()
             return True
+
+
+    async def archived_recipes(self, user_id: int, limit: int = 15, offset: int = 0) -> list[dict[str, Any]]:
+        """Рецепты сохраняются автоматически; избранное — отдельная коллекция."""
+        async with self.sessions() as db:
+            rows = (await db.scalars(
+                select(RecipeArchive).where(RecipeArchive.user_id == user_id)
+                .order_by(RecipeArchive.id.desc()).offset(max(0, offset))
+                .limit(min(max(limit, 1), 100))
+            )).all()
+            return [{"id": row.id, "recipe": row.recipe, "origin": row.origin,
+                     "created_at": str(row.created_at)} for row in rows]
+
+    async def select_archived_recipe(self, user_id: int, recipe_id: int,
+                                     activate: bool = True) -> dict[str, Any] | None:
+        async with self.sessions() as db:
+            row = await db.get(RecipeArchive, recipe_id)
+            if not row or row.user_id != user_id:
+                return None
+            if activate:
+                user = await self._user(db, user_id)
+                # Нельзя активировать старый рецепт при действующих аллергенных
+                # или иных продуктовых ограничениях без ручной проверки.
+                prefs = user.preferences or {}
+                if prefs.get("allergens") or prefs.get("excluded"):
+                    return None
+                user.last_recipe = row.recipe
+            await db.commit()
+            return row.recipe
+
+    async def remove_archived_recipe(self, user_id: int, recipe_id: int) -> bool:
+        async with self.sessions() as db:
+            row = await db.get(RecipeArchive, recipe_id)
+            if not row or row.user_id != user_id:
+                return False
+            await db.delete(row)
+            await db.commit()
+            return True
+
+    async def propose_memory(self, user_id: int, kind: str, value: str) -> int:
+        value = validate_memory(kind, value)
+        async with self.sessions() as db:
+            # Подтверждение нужно в явном виде: pending-факты не участвуют
+            # в персонализации и не передаются модели.
+            pending = (await db.scalars(
+                select(PersonalMemory.id).where(
+                    PersonalMemory.user_id == user_id,
+                    PersonalMemory.status == "pending")
+            )).all()
+            if len(pending) >= 5:
+                raise ValueError("Сначала подтвердите или отклоните ожидающие записи")
+            row = PersonalMemory(user_id=user_id, kind=kind, value=value,
+                                 status="pending", source="explicit_user")
+            db.add(row)
+            await db.commit()
+            return row.id
+
+    async def confirm_memory(self, user_id: int, memory_id: int) -> bool:
+        async with self.sessions() as db:
+            row = await db.get(PersonalMemory, memory_id)
+            if not row or row.user_id != user_id or row.status != "pending":
+                return False
+            confirmed = (await db.scalars(
+                select(PersonalMemory.id).where(
+                    PersonalMemory.user_id == user_id,
+                    PersonalMemory.status == "active")
+            )).all()
+            if len(confirmed) >= 50:
+                raise ValueError("Лимит 50 фактов: удалите неактуальные записи")
+            row.status = "active"
+            await db.commit()
+            return True
+
+    async def personal_memories(self, user_id: int, *, include_pending: bool = False,
+                                limit: int = 50) -> list[dict[str, Any]]:
+        async with self.sessions() as db:
+            stmt = select(PersonalMemory).where(PersonalMemory.user_id == user_id)
+            if not include_pending:
+                stmt = stmt.where(PersonalMemory.status == "active")
+            rows = (await db.scalars(
+                stmt.order_by(PersonalMemory.id.desc()).limit(min(max(limit, 1), 100))
+            )).all()
+            return [{"id": row.id, "kind": row.kind, "value": row.value,
+                     "status": row.status, "source": row.source}
+                    for row in rows]
+
+    async def remove_memory(self, user_id: int, memory_id: int) -> bool:
+        async with self.sessions() as db:
+            row = await db.get(PersonalMemory, memory_id)
+            if not row or row.user_id != user_id:
+                return False
+            await db.delete(row)
+            await db.commit()
+            return True
+
+    async def export_user_data(self, user_id: int) -> dict[str, Any]:
+        """Полный JSON-экспорт личных записей. Не включает чужие сведения."""
+        async with self.sessions() as db:
+            user = await db.get(User, user_id)
+
+            async def rows_for(model):
+                result = await db.scalars(select(model).where(model.user_id == user_id))
+                return result.all()
+
+            conversations = await rows_for(Conversation)
+            favorites = await rows_for(Favorite)
+            archive = await rows_for(RecipeArchive)
+            feedback = await rows_for(RecipeFeedback)
+            pantry = await rows_for(PantryItem)
+            notes = await rows_for(PersonalMemory)
+            batches = await rows_for(FermentationBatch)
+            readings = await rows_for(FermentationReading)
+            cooking = await db.get(CookingSession, user_id)
+            weekly = await db.get(WeeklyPlan, user_id)
+            return {
+                "exported_at_utc": datetime.now(timezone.utc).isoformat(),
+                "user_id": user_id,
+                "profile": {"mode": user.mode, "preferences": user.preferences,
+                            "last_recipe": user.last_recipe} if user else None,
+                "conversation": [{"role": c.role, "content": c.content,
+                                  "created_at": str(c.created_at)}
+                                 for c in conversations],
+                "recipes": [{"id": r.id, "recipe": r.recipe, "origin": r.origin,
+                             "created_at": str(r.created_at)} for r in archive],
+                "favorites": [{"id": r.id, "recipe": r.recipe,
+                               "created_at": str(r.created_at)} for r in favorites],
+                "recipe_feedback": [{"dish": r.recipe_title, "outcome": r.outcome,
+                                     "created_at": str(r.created_at)} for r in feedback],
+                "pantry": [{"product": r.display_name, "quantity": r.quantity,
+                            "unit": r.unit} for r in pantry],
+                "memories": [{"kind": r.kind, "value": r.value, "status": r.status,
+                              "source": r.source} for r in notes],
+                "weekly_plan": weekly.plan if weekly else None,
+                "cooking": {"recipe": cooking.recipe, "step_index": cooking.step_index}
+                           if cooking else None,
+                "fermentation_batches": [
+                    {"id": b.id, "category": b.category, "name": b.name,
+                     "protocol_id": b.protocol_id, "protocol_revision": b.protocol_revision,
+                     "protocol_source": b.protocol_source, "finished": b.finished,
+                     "started_at": str(b.started_at)} for b in batches
+                ],
+                "fermentation_readings": [
+                    {"batch_id": r.batch_id, "temperature_c": r.temperature_c,
+                     "ph": r.ph, "note": r.note, "observed_at": str(r.observed_at)}
+                    for r in readings
+                ],
+            }
