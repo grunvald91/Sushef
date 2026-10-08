@@ -95,6 +95,10 @@ def compare_recipe_with_pantry(recipe: dict, pantry_rows: list[dict]) -> list[di
 
 
 def format_shopping_comparison(recipe: dict, pantry_rows: list[dict]) -> str:
+    if not pantry_rows:
+        return ("🛒 Запасы ещё не записаны, поэтому нельзя определить, что уже есть дома.\n"
+                "Полный список ингредиентов для «" + recipe["title"] + "»:\n" +
+                "\n".join(f"☐ {i['name']} — {i['amount']}" for i in recipe["ingredients"]))
     compared = compare_recipe_with_pantry(recipe, pantry_rows)
     lines = ["🛒 Покупки для «" + recipe["title"] + "»:"]
     missing = [r for r in compared if r["status"] == "missing"]
