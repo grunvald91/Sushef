@@ -583,6 +583,79 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         )
         return
 
+    if data == "protocol:list":
+        protocols = list_protocols()
+        rows = [[(p.title[:50], f"protocol:view:{p.id}")] for p in protocols]
+        rows.append([("🔬 Лаборатория", "view:ferment")])
+        await send_text(
+            message, "📚 Каталог протоколов с проверенным источником. "
+            "Это не сертификат безопасности Вашей партии. "
+            "Кодзи, натто, закваски и внешние ферменты пока не имеют "
+            "готового универсального рецепта.", keyboard(rows)
+        )
+        return
+
+    if data.startswith("protocol:view:"):
+        pid = data.split(":", 2)[2]
+        p = get_protocol(pid)
+        if not p:
+            await send_text(message, "Рецептура не найдена.", fermentation_keyboard())
+            return
+        await send_text(
+            message, protocol_summary(p),
+            keyboard([
+                [("❓ Спросить о технологии", f"protocol:ask:{p.id}")],
+                [("📓 Журнал по этой версии", f"protocol:prepare:{p.id}")],
+                [("📚 Все протоколы", "protocol:list")],
+            ])
+        )
+        return
+
+    if data.startswith("protocol:ask:"):
+        pid = data.split(":", 2)[2]
+        p = get_protocol(pid)
+        if not p:
+            return
+        await storage.set_mode(user_id, f"protocol:{p.id}")
+        await send_text(
+            message, f"📖 Выбрана рецептура «{p.title}», версия {p.revision}. "
+            "Спросите об этапах, условиях, рисках или отличиях. "
+            "Я не стану выдавать изменённую технологию за ту же проверенную рецептуру.",
+            keyboard([[("📗 Показать протокол", f"protocol:view:{p.id}")],
+                      [("🔬 Лаборатория", "view:ferment")]])
+        )
+        return
+
+    if data.startswith("protocol:prepare:"):
+        pid = data.split(":", 2)[2]
+        p = get_protocol(pid)
+        if not p:
+            return
+        await send_text(
+            message,
+            "📓 Откройте полный первоисточник и убедитесь, что все условия "
+            "и меры подходят именно к Вашим продуктам.\n"
+            f"Ссылка: {p.source_url}\n\n"
+            "Вы прочитали исходный рецепт? "
+            "Журнал не является автоматической оценкой пищевой безопасности.",
+            keyboard([[("✅ Ознакомился, создать журнал", f"protocol:ack:{p.id}")],
+                      [("↩️ Вернуться к рецепту", f"protocol:view:{p.id}")]])
+        )
+        return
+
+    if data.startswith("protocol:ack:"):
+        pid = data.split(":", 2)[2]
+        p = get_protocol(pid)
+        if not p:
+            return
+        await storage.set_mode(user_id, f"pnew:{p.id}")
+        await send_text(
+            message, "📓 Введите название партии (от 2 до 120 символов). "
+            "Сушеф сохранит ID и версию источника рядом с журналом. "
+            "Это не подтверждение соблюдения технологии или пригодности продукта."
+        )
+        return
+
     if data.startswith("ferment:guide:"):
         category = data.split(":", 2)[2]
         if category not in PROCESS_LABELS:
