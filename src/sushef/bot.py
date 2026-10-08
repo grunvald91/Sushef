@@ -403,7 +403,21 @@ async def fermentation_command(message: Message) -> None:
         )
 
 
-@router.message(Command("reset", "cancel"))
+@router.message(Command("cancel"))
+async def cancel_input(message: Message, storage: Storage) -> None:
+    if not await private_only(message) or not message.from_user:
+        return
+    uid = message.from_user.id
+    cooking = await storage.current_cooking(uid)
+    await storage.set_mode(uid, "cook" if cooking else "ask")
+    await send_text(
+        message,
+        "↩️ Отменён только ввод. История, рецепт и работающие таймеры сохранены.",
+        cooking_keyboard() if cooking else main_keyboard()
+    )
+
+
+@router.message(Command("reset"))
 async def reset_dialog(message: Message, storage: Storage) -> None:
     if not await private_only(message) or not message.from_user:
         return
