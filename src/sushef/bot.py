@@ -146,7 +146,7 @@ async def start(message: Message, storage: Storage) -> None:
         "👨‍🍳 Добро пожаловать на кухню Сушефа!\n\n"
         "Великолепно, что Вы заглянули! Здесь даже картошка чувствует себя звездой ресторана. "
         "Выбирайте, чем займёмся.\n\n"
-        "Пока доступны текстовые запросы; фото и голос появятся позже.",
+        "Основной режим — текстовый; фото включается отдельно после проверки ClaudeHub, голос пока недоступен.",
         main_keyboard(),
     )
 
@@ -219,13 +219,51 @@ async def delete_me(message: Message) -> None:
         )
 
 
-@router.message(F.photo | F.voice | F.video | F.audio | F.document)
+@router.message(F.photo)
+async def inspect_photo(message: Message, storage: Storage, chef: Chef, settings: Settings) -> None:
+    if not await private_only(message) or not message.from_user:
+        return
+    if not settings.vision_enabled:
+        await send_text(message, "📷 Фотоанализ подготовлен, но пока не включён: мы ещё "
+                        "не подтвердили поддержку изображений в выбранной модели ClaudeHub. "
+                        "Опишите продукты текстом — я сразу помогу!", main_keyboard())
+        return
+    size = message.photo[-1]
+    if size.file_size and size.file_size > settings.max_photo_bytes:
+        await send_text(message, "Фотография слишком большая. Пришлите снимок меньшего размера.")
+        return
+    if not await storage.use_quota(message.from_user.id, settings.daily_ai_limit):
+        await send_text(message, "На сегодня лимит запросов к ИИ исчерпан.")
+        return
+    try:
+        await message.bot.send_chat_action(message.chat.id, "typing")
+        stream = await message.bot.download(size)
+        if stream is None or not hasattr(stream, "getvalue"):
+            raise RuntimeError("Telegram не предоставил изображение")
+        data = stream.getvalue()
+        if not data or len(data) > settings.max_photo_bytes:
+            await send_text(message, "Снимок превышает допустимый размер или недоступен.")
+            return
+        user = await storage.get_user(message.from_user.id)
+        result = await chef.inspect_photo(data, message.caption or "", user["preferences"])
+        await send_text(message, "📷 Посмотрим, что у нас на фотографии! "
+                        "Проверьте распознанные продукты: я пока ничего не добавлял в запасы.\n\n"
+                        + result,
+                        keyboard([[("➕ Записать продукты вручную", "pantry:add")],
+                                  [("🥘 Подобрать рецепт", "mode:recipe"), ("🏠 Меню", "view:main")]]))
+    except Exception as exc:
+        logger.warning("Optional vision request failed: %s", type(exc).__name__)
+        await send_text(message, "📷 Пока не удалось разобрать фото. Возможно, модель "
+                        "ClaudeHub не поддерживает изображения. Опишите продукты текстом.", main_keyboard())
+
+
+@router.message(F.voice | F.video | F.audio | F.document)
 async def unsupported_media(message: Message) -> None:
     if await private_only(message):
         await send_text(
             message,
             "Я уже мечтаю разглядывать Ваши продукты и слушать рассказы о шедеврах! "
-            "Но в этой версии понимаю только текст. Опишите продукты или задачу словами. 😊",
+            "Пока голос ещё не включён. Опишите продукты или задачу словами. 😊",
             main_keyboard(),
         )
 
