@@ -66,3 +66,40 @@ async def test_mock_model_receives_mode_and_returns_text():
     assert arguments["model"] == "test-model"
     assert "Режим: спасти блюдо" in arguments["system"]
     assert arguments["messages"][-1]["content"] == "Пересолил суп"
+
+
+@pytest.mark.asyncio
+async def test_weekly_plan_request_validated():
+    data = {"days": [
+        {"breakfast": f"Каша {i}", "lunch": f"Суп {i}", "dinner": f"Рагу {i}"}
+        for i in range(7)
+    ], "notes": "Готовьте крупы заранее."}
+    fake = SimpleNamespace(messages=SimpleNamespace(create=AsyncMock(
+        return_value=SimpleNamespace(content=[
+            SimpleNamespace(type="text", text=json.dumps(data, ensure_ascii=False))
+        ]))))
+    chef = object.__new__(Chef)
+    chef.client, chef.model, chef.max_tokens = fake, "test-model", 1024
+    result = await chef.weekly_plan("на 3 человек", {"excluded": "рыба"},
+                                  [{"display_name": "рис", "quantity": "400", "unit": "г"}])
+    assert len(result["days"]) == 7
+    kwargs = fake.messages.create.call_args.kwargs
+    assert kwargs["max_tokens"] == 3000
+    assert "рыба" in kwargs["system"]
+    assert "рис" in kwargs["messages"][0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_photo_request_uses_base64_and_no_auto_save():
+    fake = SimpleNamespace(messages=SimpleNamespace(create=AsyncMock(
+        return_value=SimpleNamespace(content=[
+            SimpleNamespace(type="text", text="На фото предположительно яблоки.")
+        ]))))
+    chef = object.__new__(Chef)
+    chef.client, chef.model, chef.max_tokens = fake, "test-model", 1024
+    response = await chef.inspect_photo(b"test-jpeg", "Что тут?", {"likes": "яблоки"})
+    assert "яблоки" in response
+    content = fake.messages.create.call_args.kwargs["messages"][0]["content"]
+    assert content[0]["type"] == "image"
+    assert content[0]["source"]["media_type"] == "image/jpeg"
+    assert content[0]["source"]["data"] == "dGVzdC1qcGVn"
