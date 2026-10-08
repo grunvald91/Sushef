@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from typing import Any
 
@@ -123,3 +124,41 @@ class Chef:
             max_tokens=3000,
         )
         return normalize_weekly_plan(output)
+
+
+    async def inspect_photo(self, image_bytes: bytes, caption: str, preferences: dict) -> str:
+        """Опциональная vision-ветка Anthropic Messages API.
+
+        Нужна реальная проверка, что ClaudeHub и выбранная модель её поддерживают.
+        Фото не записывается в базу и не добавляет продукты без подтверждения.
+        """
+        if not image_bytes:
+            raise ValueError("Пустое изображение")
+        if len(image_bytes) > 8_000_000:
+            raise ValueError("Слишком большое изображение")
+        prompt = (caption[:1000] if caption else "Какие продукты видны на фотографии?")
+        request = await self.client.messages.create(
+            model=self.model,
+            system=build_system("recipe", preferences) +
+                "\nНа фото могут быть ошибки распознавания. Не утверждай, что видишь скрытые "
+                "ингредиенты, маркировку, сроки хранения или точное количество. "
+                "Назови уверенно видимые продукты отдельно от предположений. "
+                "Не записывай продукты в запасы без явного подтверждения пользователя.",
+            max_tokens=min(self.max_tokens, 1300),
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {
+                        "type": "base64", "media_type": "image/jpeg",
+                        "data": base64.b64encode(image_bytes).decode("ascii")
+                    }},
+                    {"type": "text", "text": prompt},
+                ],
+            }],
+        )
+        answer = "\n".join(
+            block.text for block in request.content if getattr(block, "type", None) == "text"
+        ).strip()
+        if not answer:
+            raise RuntimeError("Модель не вернула описание фото")
+        return answer
