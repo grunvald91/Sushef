@@ -325,6 +325,9 @@ def assess_process(
     recipe_unchanged: bool | None,
     signs_of_spoilage: bool | None = None,
     known_starter: bool | None = None,
+    pasteurized_milk: bool | None = None,
+    brine_submerged: bool | None = None,
+    five_percent_vinegar: bool | None = None,
     ph: Decimal | None = None,
 ) -> ProtocolAssessment:
     """A red-flag assessment, NEVER a SAFE/EDIBLE clearance."""
@@ -353,7 +356,24 @@ def assess_process(
         notes.append("Есть возможные признаки порчи: продукт не пробовать; при подозрении выбросить.")
     elif signs_of_spoilage is None:
         notes.append("Неизвестно, есть ли признаки порчи.")
+    if p.category == "vegetables":
+        if brine_submerged is False:
+            stop = True
+            notes.append("Продукты вышли из рассола: режим требуется остановить/пересмотреть.")
+        elif brine_submerged is None:
+            notes.append("Неизвестно, остаются ли овощи под рассолом.")
+    if p.id == "nchfp-dill-pickles":
+        if five_percent_vinegar is False:
+            stop = True
+            notes.append("Уксус не 5%-й: исходная рецептура больше неприменима.")
+        elif five_percent_vinegar is None:
+            notes.append("Не подтверждена кислотность уксуса 5%.")
     if p.category == "dairy":
+        if pasteurized_milk is False:
+            stop = True
+            notes.append("Использование сырого молока не соответствует этому протоколу.")
+        elif pasteurized_milk is None:
+            notes.append("Не подтверждено, что молоко пастеризовано.")
         if known_starter is False:
             stop = True
             notes.append("Нет подтверждённой пищевой молочной закваски.")
@@ -368,11 +388,11 @@ def assess_process(
         notes.append("Температура вне диапазона ЭТОГО этапа и протокола.")
     if ph is not None and p.id == "usu-yogurt" and stage_code == "ferment" and ph > Decimal("4.6"):
         notes.append("Целевая кислотность USU ещё не достигнута; это не подтверждение готовности.")
+    status: AssessmentStatus = "STOP" if stop else "NEEDS_DATA" if notes else "CHECK_SOURCE"
     if not notes:
-        notes.append("Все внесённые данные требуют подтверждения по полному источнику; "
-                     "эта программа никогда не сертифицирует съедобность.")
-    return ProtocolAssessment("STOP" if stop else "NEEDS_DATA" if len(notes) > 0
-                              else "CHECK_SOURCE", tuple(notes))
+        notes.append("Проверка исходного рецепта и истории процесса всё ещё обязательна. "
+                     "Программа никогда не подтверждает пригодность продукта.")
+    return ProtocolAssessment(status, tuple(notes))
 
 
 def validate_catalog() -> None:
