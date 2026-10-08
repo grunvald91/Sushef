@@ -412,12 +412,13 @@ class Storage:
             return True
 
 
-    async def archived_recipes(self, user_id: int, limit: int = 15) -> list[dict[str, Any]]:
+    async def archived_recipes(self, user_id: int, limit: int = 15, offset: int = 0) -> list[dict[str, Any]]:
         """Рецепты сохраняются автоматически; избранное — отдельная коллекция."""
         async with self.sessions() as db:
             rows = (await db.scalars(
                 select(RecipeArchive).where(RecipeArchive.user_id == user_id)
-                .order_by(RecipeArchive.id.desc()).limit(min(max(limit, 1), 100))
+                .order_by(RecipeArchive.id.desc()).offset(max(0, offset))
+                .limit(min(max(limit, 1), 100))
             )).all()
             return [{"id": row.id, "recipe": row.recipe, "origin": row.origin,
                      "created_at": str(row.created_at)} for row in rows]
