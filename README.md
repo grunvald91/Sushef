@@ -147,3 +147,12 @@ API ClaudeHub: [claudehub.fun](https://claudehub.fun/), официальный �
 - Миграция `0002_timers` запускается Alembic перед ботом. Без неё запуск останавливается с ошибкой, чтобы не повредить данные. **Сделайте бэкап** перед обновлением живой базы.
 
 Документация: [docs/COOKING_TIMERS.md](docs/COOKING_TIMERS.md). Тесты: `tests/test_timers.py`, `tests/test_timer_storage.py`, `tests/test_migrations.py`. Минуты GitHub Actions не используются.
+
+
+## 🚀 Выкладка через GitHub Codespaces (без GitHub Actions)
+
+Для первого запуска на сервере `155.212.162.47` используется ветка `feat/guided-cooking-timers`: откройте **Codespace репозитория Sushef**, разрешите ему закрытые секреты `SERVER_SSH_KEY`, `TELEGRAM_BOT_TOKEN`, `CLAUDEHUB_API_KEY`. В редакторе выберите **Terminal → Run Task → «Сушеф: Тесты + деплой на сервер 155»**. Это одна явно запускаемая задача, не автодеплой при открытии Codespace.
+
+Задача прогоняет полный pytest, затем осторожно разворачивает только Docker-проект `sushef` в `/opt/sushef` по SSH. Существующая PostgreSQL-база перед миграцией сохраняется в резервную копию; на чистом сервере используется отдельный том. После запуска выполняется Telegram `getMe` и один короткий запрос к ClaudeHub (незначительный расход API-токенов), затем необходимо руками проверить `/start` и минутный таймер.
+
+**Пока Codespace не запущен с этой задачей, деплой не выполнен.** Полная инструкция: [docs/CODESPACES_DEPLOY.md](docs/CODESPACES_DEPLOY.md).
