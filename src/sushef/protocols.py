@@ -36,6 +36,10 @@ class VerifiedProtocol:
     source_url: str
     checked_on: str
     purpose: str
+    microorganisms_or_enzymes: str
+    equipment: tuple[str, ...]
+    humidity_target: str | None
+    enzyme_activity: str | None
     ingredients: tuple[str, ...]
     stages: tuple[ProcessStage, ...]
     monitoring: tuple[str, ...]
@@ -58,6 +62,15 @@ PROTOCOLS: tuple[VerifiedProtocol, ...] = (
         source_url="https://nchfp.uga.edu/how/can/pickles-and-fermented-products/sauerkraut/",
         checked_on="2026-10-08",
         purpose="Молочнокислая ферментация белокочанной капусты в рассоле.",
+        microorganisms_or_enzymes=(
+            "Местная молочнокислая микрофлора свежей капусты; источник не указывает конкретные штаммы."
+        ),
+        equipment=(
+            "Пищевая ёмкость, пригодный груз и чистое покрытие по оригиналу NCHFP.",
+            "Весы/исходные мерки, термометр для воздуха.",
+        ),
+        humidity_target=None,
+        enzyme_activity=None,
         ingredients=(
             "На исходную партию: 25 фунтов свежей капусты и 3/4 чашки соли для консервирования/засолки.",
             "При работе порциями: на каждые 5 фунтов капусты добавлять ровно 3 столовые ложки такой соли.",
@@ -121,6 +134,15 @@ PROTOCOLS: tuple[VerifiedProtocol, ...] = (
         source_url="https://nchfp.uga.edu/how/ferment/recipes/dill-pickles/",
         checked_on="2026-10-08",
         purpose="Молочнокислая ферментация засолочных огурцов по рецепту NCHFP.",
+        microorganisms_or_enzymes=(
+            "Микрофлора овощей при молочнокислой ферментации; конкретный штамм не задан."
+        ),
+        equipment=(
+            "Чистая пищевая ёмкость и подходящий груз/крышка из рекомендаций NCHFP.",
+            "Исходные мерные чашки, термометр окружающего воздуха.",
+        ),
+        humidity_target=None,
+        enzyme_activity=None,
         ingredients=(
             "На каждый 1 галлон вместимости ёмкости: 4 фунта небольших (4-дюймовых) огурцов для засолки.",
             "2 столовые ложки семян укропа ИЛИ 4–5 головок свежего/сухого укропа.",
@@ -180,6 +202,16 @@ PROTOCOLS: tuple[VerifiedProtocol, ...] = (
         source_url="https://extension.usu.edu/preserve-the-harvest/fermented-yogurt",
         checked_on="2026-10-08",
         purpose="Йогуртовая ферментация с пищевой коммерческой закваской.",
+        microorganisms_or_enzymes=(
+            "Пищевые живые йогуртовые культуры из активированного или коммерческого йогурта; "
+            "источник не устанавливает концентрацию конкретного штамма."
+        ),
+        equipment=(
+            "Кастрюля, мерные ёмкости, пищевые банки, термометр, йогуртница и холодильник.",
+            "Средство фактического контроля pH перед охлаждением.",
+        ),
+        humidity_target=None,
+        enzyme_activity=None,
         ingredients=(
             "Для re-culturing по источнику: 1 галлон цельного молока.",
             "1 чашка предварительно активированного йогурта ИЛИ "
@@ -270,8 +302,13 @@ def protocol_summary(p: VerifiedProtocol) -> str:
         f"URL: {p.source_url}\n"
         "Статус: исходная рецептура опубликована профильной организацией; "
         "конкретная партия НЕ сертифицирована.\n"
-        f"Применимость: {p.purpose}\n\n"
-        "Пропорции и сырьё (без автоматического пересчёта):\n"
+        f"Применимость: {p.purpose}\n"
+        f"Культуры / ферменты: {p.microorganisms_or_enzymes}\n"
+        "Оборудование:\n" + "\n".join("• " + s for s in p.equipment)
+        + "\nВлажность: " + (p.humidity_target or "не регламентирована в этом источнике")
+        + "\nФерментная активность: "
+        + (p.enzyme_activity or "не задана в единицах активности (не выдумывать)")
+        + "\n\nПропорции и сырьё (без автоматического пересчёта):\n"
         + "\n".join("• " + s for s in p.ingredients)
         + "\n\nЭтапы:\n"
         + "\n".join(
@@ -403,6 +440,7 @@ def validate_catalog() -> None:
     for p in PROTOCOLS:
         if not (p.id and p.revision and p.source_url.startswith("https://")
                 and p.publisher and p.checked_on and p.stages
+                and p.microorganisms_or_enzymes and p.equipment
                 and p.ingredients and p.critical_limits and p.stop_rules
                 and p.restrictions and p.expected_changes):
             raise ValueError(f"Неполная метаинформация протокола {p.id}")
