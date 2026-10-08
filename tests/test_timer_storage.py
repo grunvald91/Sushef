@@ -148,3 +148,47 @@ async def test_timer_is_persistent_across_storage_restart(tmp_path):
                                     now_ts=1060)
     assert sent["sent"] == 1
     await second.close()
+
+
+@pytest.mark.asyncio
+async def test_double_tap_does_not_schedule_duplicate(db):
+    await prepared(db)
+    a = await db.start_timer(100, 100, 5, "Кастрюля", now_ts=1000)
+    b = await db.start_timer(100, 100, 5, "Кастрюля", now_ts=1001)
+    assert a["id"] == b["id"]
+    assert len(await db.user_timers(100)) == 1
+
+
+@pytest.mark.asyncio
+async def test_no_auto_advance_after_delivery(db):
+    await prepared(db)
+    await db.start_timer(100, 100, 1, "Помешать", now_ts=1000)
+    sent = await deliver_due_timers(SimpleNamespace(send_message=AsyncMock()),
+                                    db, now_ts=1060)
+    assert sent["sent"] == 1
+    assert (await db.current_cooking(100))["step_index"] == 0
+
+
+@pytest.mark.asyncio
+async def test_cancelled_claim_cannot_be_sent(db):
+    await prepared(db)
+    timer = await db.start_timer(100, 100, 1, "Духовка", now_ts=1000)
+    await db.claim_due_timers(now_ts=1060)
+    assert await db.cancel_timer(100, timer["id"])
+    fake = SimpleNamespace(send_message=AsyncMock())
+    result = await deliver_due_timers(fake, db, now_ts=1180)
+    assert result["claimed"] == 0
+    fake.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_exhausted_delivery_leases_do_not_remain_sending(db):
+    await prepared(db)
+    await db.start_timer(100, 100, 1, "Повтор", now_ts=1000)
+    for now in (1060, 1180, 1300, 1420, 1540):
+        claims = await db.claim_due_timers(now_ts=now)
+        assert len(claims) == 1
+    assert await db.claim_due_timers(now_ts=1660) == []
+    assert await db.user_timers(100) == []
+    rows = (await db.export_user_data(100))["cooking_timers"]
+    assert rows[0]["status"] == "failed" and rows[0]["attempts"] == 5
