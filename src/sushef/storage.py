@@ -302,6 +302,24 @@ class Storage:
             return [{"dish": row.recipe_title, "outcome": row.outcome} for row in rows]
 
 
+    async def feedback_patterns(self, user_id: int) -> dict[str, Any]:
+        """Только наблюдаемые повторения в оценках, не выдуманные вкусы."""
+        async with self.sessions() as db:
+            rows = (await db.scalars(
+                select(RecipeFeedback).where(RecipeFeedback.user_id == user_id)
+                .order_by(RecipeFeedback.id.desc()).limit(50)
+            )).all()
+        issues: dict[str, int] = {}
+        for row in rows:
+            if row.outcome in {"salty", "dry", "spicy", "disliked"}:
+                issues[row.outcome] = issues.get(row.outcome, 0) + 1
+        return {
+            "observations": len(rows),
+            "repeated_issues": {name: n for name, n in issues.items() if n >= 2},
+            "note": "Это повторения оценок блюд, НЕ подтверждённые постоянные предпочтения.",
+        }
+
+
     async def create_fermentation_batch(
         self, user_id: int, category: str, name: str, protocol_source: str = "",
         protocol_id: str = "", protocol_revision: str = ""
