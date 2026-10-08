@@ -11,6 +11,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from .chef import Chef, RecipeFormatError, format_recipe
 from .fermentation import PROCESS_LABELS, fermentation_system_context, intake_text
 from .fermentation_journal import SAFETY_REMINDER, observation_text, parse_observation
+from .protocols import get_protocol, list_protocols, protocol_context, protocol_summary
 from .pantry import format_quantity, format_shopping_comparison, parse_product_line
 from .weekly import DAY_NAMES, MEAL_NAMES, WeeklyPlanError, format_day, format_full_week
 from .config import Settings
@@ -75,6 +76,7 @@ def fermentation_keyboard() -> InlineKeyboardMarkup:
         [("🧪 Внешние пищевые ферменты", "ferment:guide:enzymes")],
         [("🦠 Полезные пищевые культуры", "ferment:guide:cultures")],
         [("🔬 Другие процессы", "ferment:guide:other")],
+        [("📚 Каталог протоколов", "protocol:list")],
         [("📓 Журнал ферментации", "ferment:list")],
         [("🏠 Главное меню", "view:main")],
     ])
@@ -94,7 +96,10 @@ def fermentation_batch_text(batch: dict) -> str:
     label = PROCESS_LABELS.get(batch["category"], "Неизвестный процесс")
     state = "завершено наблюдение" if batch["finished"] else "наблюдение продолжается"
     lines = [f"📓 {batch['name']}", label, f"Статус: {state}"]
-    if batch.get("protocol_source"):
+    if batch.get("protocol_id"):
+        lines.append("📚 Протокол " + batch["protocol_id"] + " v" + batch["protocol_revision"])
+        lines.append("Опубликованный источник (не сертификат партии): " + batch["protocol_source"])
+    elif batch.get("protocol_source"):
         lines.append("Источник по словам пользователя (не проверен): " + batch["protocol_source"])
     else:
         lines.append("⚠️ Проверенный источник технологии не указан.")
