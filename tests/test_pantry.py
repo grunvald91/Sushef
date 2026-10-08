@@ -59,3 +59,10 @@ def test_conservative_matching_avoids_false_equivalence():
     rows = compare_recipe_with_pantry(recipe, stock)
     assert rows[0]["status"] == "missing"
     assert rows[1]["status"] == "check"
+
+
+def test_unknown_inventory_does_not_claim_items_missing():
+    recipe = {"title": "Каша", "ingredients": [{"name": "Молоко", "amount": "200 мл"}]}
+    result = format_shopping_comparison(recipe, [])
+    assert "нельзя определить" in result
+    assert "Молоко" in result
