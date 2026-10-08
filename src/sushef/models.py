@@ -119,3 +119,25 @@ class PersonalMemory(Base):
     status: Mapped[str] = mapped_column(String(12), nullable=False, default="pending")
     source: Mapped[str] = mapped_column(String(24), nullable=False, default="explicit_user")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CookingTimer(Base):
+    """Persistent Telegram timer. Background worker resumes after process restarts.
+
+    The lease-based dispatcher is at-least-once: a crash between Telegram send
+    and status update can result in a duplicate notification, not a lost timer.
+    """
+    __tablename__ = "cooking_timers"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    recipe_title: Mapped[str] = mapped_column(String(180), nullable=False)
+    step_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    label: Mapped[str] = mapped_column(String(120), nullable=False)
+    minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    due_at_ts: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), index=True, default="active", nullable=False)
+    lease_until_ts: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    retry_at_ts: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
