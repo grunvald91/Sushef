@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import BigInteger, DateTime, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -46,3 +46,21 @@ class CookingSession(Base):
     recipe: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     step_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PantryItem(Base):
+    __tablename__ = "pantry_items"
+    __table_args__ = (UniqueConstraint("user_id", "name_key", "unit"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    name_key: Mapped[str] = mapped_column(String(90), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(90), nullable=False)
+    unit: Mapped[str] = mapped_column(String(8), nullable=False)
+    quantity: Mapped[str] = mapped_column(String(40), nullable=False)
+
+
+class WeeklyPlan(Base):
+    __tablename__ = "weekly_plans"
+    user_id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    plan: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
