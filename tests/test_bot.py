@@ -41,3 +41,13 @@ def test_fermentation_ui_exposes_all_safe_process_categories():
     finished = {b.callback_data for row in fermentation_batch_keyboard(42, True).inline_keyboard for b in row}
     assert "ferment:observe:42" not in finished
     assert "ferment:remove:42" in finished
+
+
+def test_documented_protocol_navigation_exists():
+    from sushef.bot import fermentation_keyboard, fermentation_batch_keyboard
+    from sushef.protocols import PROTOCOLS
+    controls = {b.callback_data for row in fermentation_keyboard().inline_keyboard for b in row}
+    assert "protocol:list" in controls
+    assert len(PROTOCOLS) >= 3
+    journal = {b.callback_data for row in fermentation_batch_keyboard(123, False).inline_keyboard for b in row}
+    assert "protocol:check:123" in journal

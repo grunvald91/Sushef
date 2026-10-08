@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 from typing import Any
 
 from aiogram import F, Router
@@ -11,6 +12,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from .chef import Chef, RecipeFormatError, format_recipe
 from .fermentation import PROCESS_LABELS, fermentation_system_context, intake_text
 from .fermentation_journal import SAFETY_REMINDER, observation_text, parse_observation
+from .protocols import assess_process, get_protocol, list_protocols, protocol_context, protocol_summary
 from .pantry import format_quantity, format_shopping_comparison, parse_product_line
 from .weekly import DAY_NAMES, MEAL_NAMES, WeeklyPlanError, format_day, format_full_week
 from .config import Settings
@@ -75,6 +77,7 @@ def fermentation_keyboard() -> InlineKeyboardMarkup:
         [("🧪 Внешние пищевые ферменты", "ferment:guide:enzymes")],
         [("🦠 Полезные пищевые культуры", "ferment:guide:cultures")],
         [("🔬 Другие процессы", "ferment:guide:other")],
+        [("📚 Каталог протоколов", "protocol:list")],
         [("📓 Журнал ферментации", "ferment:list")],
         [("🏠 Главное меню", "view:main")],
     ])
@@ -85,7 +88,8 @@ def fermentation_batch_keyboard(batch_id: int, finished: bool) -> InlineKeyboard
     if not finished:
         buttons += [[("📝 Записать замер", f"ferment:observe:{batch_id}")],
                     [("🏁 Завершить наблюдение", f"ferment:finish:{batch_id}")]]
-    buttons += [[("🗑 Удалить партию", f"ferment:remove:{batch_id}")],
+    buttons += [[("🔎 Проверить контрольные условия", f"protocol:check:{batch_id}")],
+                [("🗑 Удалить партию", f"ferment:remove:{batch_id}")],
                 [("📓 Все партии", "ferment:list"), ("🔬 Раздел", "view:ferment")]]
     return keyboard(buttons)
 
@@ -94,7 +98,10 @@ def fermentation_batch_text(batch: dict) -> str:
     label = PROCESS_LABELS.get(batch["category"], "Неизвестный процесс")
     state = "завершено наблюдение" if batch["finished"] else "наблюдение продолжается"
     lines = [f"📓 {batch['name']}", label, f"Статус: {state}"]
-    if batch.get("protocol_source"):
+    if batch.get("protocol_id"):
+        lines.append("📚 Протокол " + batch["protocol_id"] + " v" + batch["protocol_revision"])
+        lines.append("Опубликованный источник (не сертификат партии): " + batch["protocol_source"])
+    elif batch.get("protocol_source"):
         lines.append("Источник по словам пользователя (не проверен): " + batch["protocol_source"])
     else:
         lines.append("⚠️ Проверенный источник технологии не указан.")
@@ -371,6 +378,30 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
         await send_text(message, "Прекрасно! Настройки обновлены.\n\n" + profile_text(updated["preferences"]), profile_keyboard())
         return
 
+    if mode.startswith("pnew:"):
+        pid = mode.split(":", 1)[1]
+        p = get_protocol(pid)
+        if not p:
+            await storage.set_mode(user_id, "ask")
+            await send_text(message, "Рецептура не найдена.", fermentation_keyboard())
+            return
+        try:
+            batch_id = await storage.create_fermentation_batch(
+                user_id, p.category, text, p.source_url, p.id, p.revision
+            )
+        except ValueError as exc:
+            await send_text(message, "Не удалось создать журнал: " + str(exc))
+            return
+        await storage.set_mode(user_id, "ask")
+        batch = await storage.fermentation_batch(user_id, batch_id)
+        await send_text(
+            message,
+            "📓 Журнал привязан к исходному протоколу, но Сушеф не удостоверяет "
+            "безопасность Вашей партии.\n\n" + fermentation_batch_text(batch),
+            fermentation_batch_keyboard(batch_id, False),
+        )
+        return
+
     if mode.startswith("fnew:"):
         category = mode.split(":", 1)[1]
         try:
@@ -479,6 +510,15 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
         else:
             history = await storage.get_history(user_id)
             context = ""
+            if mode.startswith("protocol:"):
+                pid = mode.split(":", 1)[1]
+                p = get_protocol(pid)
+                if p:
+                    context = protocol_context(pid)
+                    mode = "ferment"
+                else:
+                    await storage.set_mode(user_id, "ask")
+                    mode = "ask"
             if mode.startswith("ferment:"):
                 category = mode.split(":", 1)[1]
                 if category in PROCESS_LABELS:
@@ -542,6 +582,125 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
             "Выбирайте культурный процесс, пищевой фермент или журнал партии. "
             "При неопределённости лучше остановиться и проверить протокол.",
             fermentation_keyboard(),
+        )
+        return
+
+    if data == "protocol:list":
+        protocols = list_protocols()
+        rows = [[(p.title[:50], f"protocol:view:{p.id}")] for p in protocols]
+        rows.append([("🔬 Лаборатория", "view:ferment")])
+        await send_text(
+            message, "📚 Каталог протоколов с проверенным источником. "
+            "Это не сертификат безопасности Вашей партии. "
+            "Кодзи, натто, закваски и внешние ферменты пока не имеют "
+            "готового универсального рецепта.", keyboard(rows)
+        )
+        return
+
+    if data.startswith("protocol:view:"):
+        pid = data.split(":", 2)[2]
+        p = get_protocol(pid)
+        if not p:
+            await send_text(message, "Рецептура не найдена.", fermentation_keyboard())
+            return
+        await send_text(
+            message, protocol_summary(p),
+            keyboard([
+                [("❓ Спросить о технологии", f"protocol:ask:{p.id}")],
+                [("📓 Журнал по этой версии", f"protocol:prepare:{p.id}")],
+                [("📚 Все протоколы", "protocol:list")],
+            ])
+        )
+        return
+
+    if data.startswith("protocol:ask:"):
+        pid = data.split(":", 2)[2]
+        p = get_protocol(pid)
+        if not p:
+            return
+        await storage.set_mode(user_id, f"protocol:{p.id}")
+        await send_text(
+            message, f"📖 Выбрана рецептура «{p.title}», версия {p.revision}. "
+            "Спросите об этапах, условиях, рисках или отличиях. "
+            "Я не стану выдавать изменённую технологию за ту же проверенную рецептуру.",
+            keyboard([[("📗 Показать протокол", f"protocol:view:{p.id}")],
+                      [("🔬 Лаборатория", "view:ferment")]])
+        )
+        return
+
+    if data.startswith("protocol:prepare:"):
+        pid = data.split(":", 2)[2]
+        p = get_protocol(pid)
+        if not p:
+            return
+        await send_text(
+            message,
+            "📓 Откройте полный первоисточник и убедитесь, что все условия "
+            "и меры подходят именно к Вашим продуктам.\n"
+            f"Ссылка: {p.source_url}\n\n"
+            "Вы прочитали исходный рецепт? "
+            "Журнал не является автоматической оценкой пищевой безопасности.",
+            keyboard([[("✅ Ознакомился, создать журнал", f"protocol:ack:{p.id}")],
+                      [("↩️ Вернуться к рецепту", f"protocol:view:{p.id}")]])
+        )
+        return
+
+    if data.startswith("protocol:ack:"):
+        pid = data.split(":", 2)[2]
+        p = get_protocol(pid)
+        if not p:
+            return
+        await storage.set_mode(user_id, f"pnew:{p.id}")
+        await send_text(
+            message, "📓 Введите название партии (от 2 до 120 символов). "
+            "Сушеф сохранит ID и версию источника рядом с журналом. "
+            "Это не подтверждение соблюдения технологии или пригодности продукта."
+        )
+        return
+
+    if data.startswith("protocol:check:"):
+        try:
+            batch_id = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            return
+        batch = await storage.fermentation_batch(user_id, batch_id)
+        if not batch:
+            await send_text(message, "Партия недоступна.", fermentation_keyboard())
+            return
+        p = get_protocol(batch["protocol_id"]) if batch.get("protocol_id") else None
+        if not p:
+            await send_text(
+                message, "Для этой партии нет привязки к опубликованной версии "
+                "протокола. Сравнивать показатели автоматически нельзя.",
+                fermentation_batch_keyboard(batch_id, batch["finished"])
+            )
+            return
+        if batch["protocol_revision"] != p.revision:
+            await send_text(
+                message, "Каталог изменился с момента записи этой партии. "
+                "Автоматическое сравнение по другой версии запрещено.",
+                fermentation_batch_keyboard(batch_id, batch["finished"])
+            )
+            return
+        last = batch["readings"][-1] if batch["readings"] else {}
+        celsius = Decimal(str(last["temperature_c"])) if last.get("temperature_c") is not None else None
+        fahrenheit = (celsius * Decimal("9") / Decimal("5") + Decimal("32")) if celsius is not None else None
+        acidity = Decimal(str(last["ph"])) if last.get("ph") is not None else None
+        stage = next((s.code for s in p.stages if s.code == "ferment"), p.stages[0].code)
+        assessment = assess_process(
+            p.id, stage, fahrenheit, recipe_unchanged=None,
+            signs_of_spoilage=None, known_starter=None, ph=acidity
+        )
+        await send_text(
+            message,
+            "🔎 Предварительный скрининг (без гарантии безопасности)\n"
+            f"Рецептура: {p.id} / {p.revision}\n"
+            f"Статус: {assessment.status}\n"
+            + "\n".join("• " + reason for reason in assessment.notes)
+            + "\n\n❗ Это не разрешение пробовать или есть продукт. "
+              "Фактические пропорции, свежесть, санитария, культура и вся история "
+              "температур требуют самостоятельной проверки по источнику.",
+            fermentation_batch_keyboard(batch_id, batch["finished"])
         )
         return
 

@@ -299,7 +299,10 @@ class Storage:
             return [{"dish": row.recipe_title, "outcome": row.outcome} for row in rows]
 
 
-    async def create_fermentation_batch(self, user_id: int, category: str, name: str, protocol_source: str = "") -> int:
+    async def create_fermentation_batch(
+        self, user_id: int, category: str, name: str, protocol_source: str = "",
+        protocol_id: str = "", protocol_revision: str = ""
+    ) -> int:
         from .fermentation import PROCESS_LABELS
         if category not in PROCESS_LABELS:
             raise ValueError("Неизвестная категория")
@@ -307,6 +310,13 @@ class Storage:
             raise ValueError("Название должно содержать 2–120 символов")
         if len(protocol_source) > 240:
             raise ValueError("Источник должен содержать не более 240 символов")
+        if protocol_id or protocol_revision:
+            from .protocols import get_protocol
+            p = get_protocol(protocol_id)
+            if not p or p.revision != protocol_revision or p.category != category:
+                raise ValueError("Неизвестная или устаревшая версия протокола")
+            if protocol_source != p.source_url:
+                raise ValueError("Нельзя заменять первоисточник выбранного протокола")
         async with self.sessions() as db:
             active = (await db.scalars(
                 select(FermentationBatch.id).where(
@@ -316,6 +326,7 @@ class Storage:
                 raise ValueError("Одновременно можно вести не больше 10 партий")
             row = FermentationBatch(user_id=user_id, category=category,
                                     name=name.strip(), protocol_source=protocol_source.strip(),
+                                    protocol_id=protocol_id, protocol_revision=protocol_revision,
                                     finished=False)
             db.add(row)
             await db.commit()
@@ -330,7 +341,8 @@ class Storage:
             )).all()
             return [{"id": r.id, "name": r.name, "category": r.category,
                      "finished": r.finished, "started_at": str(r.started_at),
-                     "protocol_source": r.protocol_source}
+                     "protocol_source": r.protocol_source,
+                     "protocol_id": r.protocol_id, "protocol_revision": r.protocol_revision}
                     for r in items]
 
     async def fermentation_batch(self, user_id: int, batch_id: int) -> dict[str, Any] | None:
@@ -348,6 +360,7 @@ class Storage:
                 "id": row.id, "name": row.name, "category": row.category,
                 "finished": row.finished, "started_at": str(row.started_at),
                 "protocol_source": row.protocol_source,
+                "protocol_id": row.protocol_id, "protocol_revision": row.protocol_revision,
                 "readings": [{"temperature_c": r.temperature_c, "ph": r.ph,
                               "note": r.note, "observed_at": str(r.observed_at)}
                              for r in reversed(readings)]
