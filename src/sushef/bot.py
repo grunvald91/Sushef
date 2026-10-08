@@ -56,6 +56,16 @@ def recipe_keyboard() -> InlineKeyboardMarkup:
     return keyboard([
         [("👨‍🍳 Готовим пошагово", "cook:start")],
         [("❤️ Сохранить рецепт", "recipe:save"), ("🛒 Список продуктов", "view:shop")],
+        [("😋 Оценить результат", "view:rating")],
+        [("🏠 Главное меню", "view:main")],
+    ])
+
+
+def rating_keyboard() -> InlineKeyboardMarkup:
+    return keyboard([
+        [("😍 Великолепно", "rate:great"), ("👍 Вкусно", "rate:good")],
+        [("🧂 Пересолено", "rate:salty"), ("🥩 Суховато", "rate:dry")],
+        [("🌶 Слишком остро", "rate:spicy"), ("😕 Не понравилось", "rate:disliked")],
         [("🏠 Главное меню", "view:main")],
     ])
 
@@ -202,7 +212,7 @@ async def privacy(message: Message) -> None:
         await send_text(
             message,
             "🔒 Для работы сохраняются Ваш Telegram ID, выбранные настройки, "
-            "до 40 последних реплик диалога, рецепты, записи о продуктах, недельное меню и шаги приготовления. "
+            "до 40 последних реплик диалога, рецепты, оценки блюд, записи о продуктах, недельное меню и шаги приготовления. "
             "Запросы, история диалога и указанные предпочтения передаются провайдеру ClaudeHub "
             "для генерации ответа. Никаких сторонних рекламных рассылок бот не делает.\n\n"
             "/reset — очистить диалог.\n/delete_me — полностью удалить сохранённые данные.\n"
@@ -282,6 +292,10 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
 
     user = await storage.get_user(user_id)
     mode = user["mode"]
+    preferences = dict(user["preferences"])
+    feedback = await storage.recent_feedback(user_id)
+    if feedback:
+        preferences["recent_cooking_feedback"] = feedback
 
     if mode.startswith("pref:"):
         key = mode.split(":", 1)[1]
@@ -353,12 +367,12 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
                 query = f"Полный подробный рецепт для блюда «{selected}». Пожелания пользователя: {text}"
             else:
                 query = text
-            recipe = await chef.recipe(query, user["preferences"])
+            recipe = await chef.recipe(query, preferences)
             await storage.set_recipe(user_id, recipe)
             await storage.set_mode(user_id, "ask")
             await send_text(message, "Ваше кулинарное приключение начинается! 🥘\n\n" + format_recipe(recipe), recipe_keyboard())
         elif mode == "plan":
-            plan = await chef.weekly_plan(text, user["preferences"], await storage.pantry(user_id))
+            plan = await chef.weekly_plan(text, preferences, await storage.pantry(user_id))
             await storage.save_weekly_plan(user_id, plan)
             await storage.set_mode(user_id, "ask")
             await send_text(message, "📅 Меню на неделю готово! Начнём с понедельника.\n\n" +
@@ -373,7 +387,7 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
                 else:
                     await storage.set_mode(user_id, "ask")
                     mode = "ask"
-            answer = await chef.answer(mode, text, user["preferences"], history, context)
+            answer = await chef.answer(mode, text, preferences, history, context)
             await storage.add_exchange(user_id, text, answer)
             await send_text(message, answer, cooking_keyboard() if mode == "cook" else main_keyboard())
     except (RecipeFormatError, WeeklyPlanError):
@@ -487,6 +501,32 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
                         "Укажите порции и пожелания, например «на троих, без острого».")
         return
 
+    if data == "view:rating":
+        user = await storage.get_user(user_id)
+        if user["last_recipe"]:
+            await send_text(message, "👨‍🍳 Ну как получилось? Ваш отзыв поможет мне точнее "
+                            "подбирать следующие блюда.", rating_keyboard())
+        else:
+            await send_text(message, "Сначала выберите и приготовьте блюдо.", main_keyboard())
+        return
+
+    if data.startswith("rate:"):
+        outcome = data.split(":", 1)[1]
+        explanations = {
+            "great": "Какой триумф! Ваше мастерство сегодня блистает! 🌟",
+            "good": "Прекрасный результат! Я учту Вашу оценку. 😋",
+            "salty": "Учту, что соли получилось многовато. Следующие рецепты проверим особенно внимательно. 🧂",
+            "dry": "Запомню, что блюдо вышло суховатым. Поработаем над сочностью. 🍗",
+            "spicy": "Понял: степень остроты нужно уменьшить. 🌶",
+            "disliked": "Спасибо за честный отзыв! Подберём вкусы, которые понравятся больше. 💛",
+        }
+        if outcome not in explanations:
+            return
+        saved = await storage.rate_last_recipe(user_id, outcome)
+        await send_text(message, explanations[outcome] if saved else
+                        "Нет последнего рецепта для оценки.", main_keyboard())
+        return
+
     if data == "view:profile":
         user = await storage.get_user(user_id)
         await send_text(message, profile_text(user["preferences"]), profile_keyboard())
@@ -570,7 +610,7 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         if not session:
             await send_text(message, "Активного приготовления нет. Выберите рецепт.", main_keyboard())
         elif session["step_index"] >= len(session["recipe"]["steps"]):
-            await send_text(message, cooking_text(session), main_keyboard())
+            await send_text(message, cooking_text(session) + "\n\nХотите оценить результат?", rating_keyboard())
         else:
             await send_text(message, cooking_text(session), cooking_keyboard())
         return
