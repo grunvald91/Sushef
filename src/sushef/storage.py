@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from .models import Base, Conversation, CookingSession, Favorite, PantryItem, User, WeeklyPlan
+from .models import Base, Conversation, CookingSession, Favorite, PantryItem, RecipeFeedback, User, WeeklyPlan
 
 
 class Storage:
@@ -186,6 +186,7 @@ class Storage:
             await db.execute(delete(Favorite).where(Favorite.user_id == user_id))
             await db.execute(delete(PantryItem).where(PantryItem.user_id == user_id))
             await db.execute(delete(WeeklyPlan).where(WeeklyPlan.user_id == user_id))
+            await db.execute(delete(RecipeFeedback).where(RecipeFeedback.user_id == user_id))
             await db.execute(delete(User).where(User.id == user_id))
             await db.commit()
 
@@ -263,3 +264,34 @@ class Storage:
             state = {"recipe": row.recipe, "step_index": row.step_index}
             await db.commit()
             return state
+
+
+    async def rate_last_recipe(self, user_id: int, outcome: str) -> bool:
+        allowed = {"great", "good", "salty", "dry", "spicy", "disliked"}
+        if outcome not in allowed:
+            raise ValueError("Неизвестная оценка")
+        async with self.sessions() as db:
+            user = await self._user(db, user_id)
+            recipe = user.last_recipe
+            if not isinstance(recipe, dict) or not recipe.get("title"):
+                return False
+            db.add(RecipeFeedback(user_id=user_id, recipe_title=recipe["title"][:180],
+                                  outcome=outcome))
+            await db.flush()
+            extra = await db.scalars(select(RecipeFeedback.id)
+                                     .where(RecipeFeedback.user_id == user_id)
+                                     .order_by(RecipeFeedback.id.desc()).offset(50))
+            old_ids = list(extra)
+            if old_ids:
+                await db.execute(delete(RecipeFeedback).where(RecipeFeedback.id.in_(old_ids)))
+            await db.commit()
+            return True
+
+    async def recent_feedback(self, user_id: int) -> list[dict[str, str]]:
+        async with self.sessions() as db:
+            rows = await db.scalars(
+                select(RecipeFeedback)
+                .where(RecipeFeedback.user_id == user_id)
+                .order_by(RecipeFeedback.id.desc()).limit(10)
+            )
+            return [{"dish": row.recipe_title, "outcome": row.outcome} for row in rows]
