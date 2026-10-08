@@ -8,7 +8,9 @@ from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from .chef import Chef, RecipeFormatError, format_recipe, shopping_list
+from .chef import Chef, RecipeFormatError, format_recipe
+from .pantry import format_quantity, format_shopping_comparison, parse_product_line
+from .weekly import DAY_NAMES, MEAL_NAMES, WeeklyPlanError, format_day, format_full_week
 from .config import Settings
 from .storage import Storage
 
@@ -26,7 +28,7 @@ PREF_LABELS = {
 MODE_PROMPTS = {
     "recipe": "🥘 Перечислите продукты, из которых хочется приготовить блюдо. Добавьте пожелания по времени или вкусу.",
     "rescue": "🆘 Расскажите, какое блюдо не удалось и что именно пошло не так. Вместе найдём честный способ исправить ситуацию!",
-    "plan": "📅 Для меню на неделю укажите количество человек, бюджет, предпочтения и ограничения. Если данных не хватит, я уточню.",
+    "plan": "📅 Укажите количество человек, бюджет, ограничения и сколько времени готовы тратить на готовку. Я составлю меню из 21 блюда на семь дней.",
     "ask": "💬 Спрашивайте о чём угодно кулинарном. Я здесь, чтобы помогать и делать кухню чуточку веселее!",
 }
 
@@ -45,6 +47,7 @@ def main_keyboard() -> InlineKeyboardMarkup:
         [("🥘 Что приготовить?", "mode:recipe"), ("🆘 Спасти блюдо", "mode:rescue")],
         [("📅 Меню на неделю", "mode:plan"), ("👨‍🍳 Готовим вместе", "cook:start")],
         [("❤️ Мои рецепты", "view:favorites"), ("🛒 Покупки", "view:shop")],
+        [("📦 Мои продукты", "view:pantry"), ("📆 Моё меню", "view:week")],
         [("🥗 Мой профиль", "view:profile"), ("💬 Спросить шефа", "mode:ask")],
     ])
 
@@ -84,8 +87,38 @@ def cooking_text(session: dict[str, Any]) -> str:
 
 def cooking_keyboard() -> InlineKeyboardMarkup:
     return keyboard([
-        [("✅ Сделано, следующий шаг", "cook:next")],
+        [("⬅️ Предыдущий", "cook:previous"), ("✅ Следующий", "cook:next")],
         [("🥘 Показать рецепт", "recipe:show"), ("🏠 Меню", "view:main")],
+    ])
+
+
+def pantry_keyboard() -> InlineKeyboardMarkup:
+    return keyboard([
+        [("➕ Добавить", "pantry:add"), ("➖ Убрать", "pantry:remove")],
+        [("🥘 Приготовить из запасов", "pantry:recipe")],
+        [("🧹 Очистить запасы", "pantry:confirm_clear"), ("🏠 Меню", "view:main")],
+    ])
+
+
+def pantry_text(rows: list[dict]) -> str:
+    if not rows:
+        return "📦 Ваши запасы пока пусты. Добавьте продукты, например «картофель 500 г» и «яйца 4 шт»."
+    return ("📦 В Вашей кухне записано:\n" +
+            "\n".join(f"• {r['display_name']} — {format_quantity(r['quantity'], r['unit'])}" for r in rows) +
+            "\n\nЭто записанные Вами остатки, а не сведения о свежести продуктов.")
+
+
+def week_keyboard(day_index: int) -> InlineKeyboardMarkup:
+    previous = (day_index - 1) % 7
+    following = (day_index + 1) % 7
+    return keyboard([
+        [("⬅️ " + DAY_NAMES[previous][:2], f"week:day:{previous}"),
+         ("➡️ " + DAY_NAMES[following][:2], f"week:day:{following}")],
+        [("🌅 Рецепт завтрака", f"week:meal:{day_index}:0")],
+        [("🍲 Рецепт обеда", f"week:meal:{day_index}:1"),
+         ("🍽 Рецепт ужина", f"week:meal:{day_index}:2")],
+        [("📜 Вся неделя", "week:all"), ("🔄 Новое меню", "mode:plan")],
+        [("🏠 Главное меню", "view:main")],
     ])
 
 
@@ -125,7 +158,7 @@ async def help_menu(message: Message) -> None:
             message,
             "👨‍🍳 Сушеф поможет придумать рецепт, спасти блюдо, составить меню "
             "и провести Вас по шагам приготовления.\n\n"
-            "Команды: /start, /menu, /help, /profile, /reset, /privacy, /delete_me.",
+            "Команды: /start, /menu, /help, /profile, /pantry, /week, /reset, /privacy, /delete_me.",
             main_keyboard(),
         )
 
@@ -136,6 +169,23 @@ async def show_profile(message: Message, storage: Storage) -> None:
         return
     user = await storage.get_user(message.from_user.id)
     await send_text(message, profile_text(user["preferences"]), profile_keyboard())
+
+
+@router.message(Command("pantry"))
+async def show_pantry_command(message: Message, storage: Storage) -> None:
+    if not await private_only(message) or not message.from_user:
+        return
+    rows = await storage.pantry(message.from_user.id)
+    await send_text(message, pantry_text(rows), pantry_keyboard())
+
+
+@router.message(Command("week"))
+async def show_week_command(message: Message, storage: Storage) -> None:
+    if not await private_only(message) or not message.from_user:
+        return
+    plan = await storage.get_weekly_plan(message.from_user.id)
+    await send_text(message, format_day(plan, 0), week_keyboard(0)) if plan else await send_text(
+        message, "📅 Сохранённого меню пока нет. Составим?", keyboard([[("Создать меню", "mode:plan")]]))
 
 
 @router.message(Command("reset", "cancel"))
@@ -152,7 +202,7 @@ async def privacy(message: Message) -> None:
         await send_text(
             message,
             "🔒 Для работы сохраняются Ваш Telegram ID, выбранные настройки, "
-            "до 40 последних реплик диалога, рецепты и шаги приготовления. "
+            "до 40 последних реплик диалога, рецепты, записи о продуктах, недельное меню и шаги приготовления. "
             "Запросы, история диалога и указанные предпочтения передаются провайдеру ClaudeHub "
             "для генерации ответа. Никаких сторонних рекламных рассылок бот не делает.\n\n"
             "/reset — очистить диалог.\n/delete_me — полностью удалить сохранённые данные.\n"
@@ -211,16 +261,70 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
         await send_text(message, "Прекрасно! Настройки обновлены.\n\n" + profile_text(updated["preferences"]), profile_keyboard())
         return
 
+    if mode.startswith("pantry:"):
+        action = mode.split(":", 1)[1]
+        if action not in {"add", "remove"}:
+            await storage.set_mode(user_id, "ask")
+            await send_text(message, "Режим продуктов не распознан. Вернёмся к меню.", main_keyboard())
+            return
+        lines = [item.strip() for item in text.replace(";", "\n").splitlines() if item.strip()]
+        if len(lines) > 15:
+            await send_text(message, "За одно сообщение можно изменить не больше 15 продуктов.")
+            return
+        applied, errors = [], []
+        for line in lines:
+            try:
+                name, key, quantity = parse_product_line(line)
+                changed = await storage.change_pantry(
+                    user_id, name, key, quantity.value, quantity.unit, remove=(action == "remove"))
+                if changed:
+                    applied.append(f"{name}: {format_quantity(quantity.value, quantity.unit)}")
+                else:
+                    errors.append(f"{name}: такого запаса нет")
+            except ValueError as exc:
+                errors.append(f"{line[:60]}: {str(exc)}")
+        await storage.set_mode(user_id, "ask")
+        report = "✅ Изменено: " + (", ".join(applied) if applied else "нет")
+        if errors:
+            report += "\n\nНужно исправить:\n" + "\n".join("• " + e for e in errors)
+        await send_text(message, report + "\n\n" + pantry_text(await storage.pantry(user_id)), pantry_keyboard())
+        return
+
     if not await storage.use_quota(user_id, settings.daily_ai_limit):
         await send_text(message, "На сегодня лимит обращений к ИИ исчерпан. Завтра (по UTC) снова сможем творить вкусное! 🍲")
         return
 
     try:
         await message.bot.send_chat_action(message.chat.id, "typing")
-        if mode == "recipe":
-            recipe = await chef.recipe(text, user["preferences"])
+        if mode in {"recipe", "pantry_recipe"} or mode.startswith("weekly:"):
+            if mode == "pantry_recipe":
+                rows = await storage.pantry(user_id)
+                products = ", ".join(
+                    f"{r['display_name']}: {r['quantity']} {r['unit']}" for r in rows)
+                query = ("Доступные продукты (данные пользователя): " + products +
+                         "\nЗапрос: " + text +
+                         "\nПри нехватке продукта пометь необходимость докупить в списке ингредиентов.")
+            elif mode.startswith("weekly:"):
+                plan = await storage.get_weekly_plan(user_id)
+                if not plan:
+                    await storage.set_mode(user_id, "ask")
+                    await send_text(message, "Это меню уже неактуально. Создайте новое.", main_keyboard())
+                    return
+                _, day_raw, meal = mode.split(":")
+                selected = plan["days"][int(day_raw)][meal]
+                query = f"Полный подробный рецепт для блюда «{selected}». Пожелания пользователя: {text}"
+            else:
+                query = text
+            recipe = await chef.recipe(query, user["preferences"])
             await storage.set_recipe(user_id, recipe)
+            await storage.set_mode(user_id, "ask")
             await send_text(message, "Ваше кулинарное приключение начинается! 🥘\n\n" + format_recipe(recipe), recipe_keyboard())
+        elif mode == "plan":
+            plan = await chef.weekly_plan(text, user["preferences"], await storage.pantry(user_id))
+            await storage.save_weekly_plan(user_id, plan)
+            await storage.set_mode(user_id, "ask")
+            await send_text(message, "📅 Меню на неделю готово! Начнём с понедельника.\n\n" +
+                            format_day(plan, 0), week_keyboard(0))
         else:
             history = await storage.get_history(user_id)
             context = ""
@@ -234,9 +338,9 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
             answer = await chef.answer(mode, text, user["preferences"], history, context)
             await storage.add_exchange(user_id, text, answer)
             await send_text(message, answer, cooking_keyboard() if mode == "cook" else main_keyboard())
-    except RecipeFormatError:
-        logger.warning("Model returned invalid recipe JSON")
-        await send_text(message, "Я пока не смог аккуратно оформить рецепт. Попробуйте уточнить продукты и повторить запрос.", main_keyboard())
+    except (RecipeFormatError, WeeklyPlanError):
+        logger.warning("Model returned malformed structured culinary response")
+        await send_text(message, "Не удалось оформить рецепт или меню без ошибок. Попробуйте переформулировать запрос.", main_keyboard())
     except Exception as exc:
         logger.warning("AI request failed: %s", type(exc).__name__)
         await send_text(
@@ -270,6 +374,81 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
             await send_text(message, MODE_PROMPTS[mode])
         return
 
+    if data == "view:pantry":
+        await send_text(message, pantry_text(await storage.pantry(user_id)), pantry_keyboard())
+        return
+
+    if data in {"pantry:add", "pantry:remove"}:
+        await storage.set_mode(user_id, data)
+        await send_text(message, ("➕ Напишите продукты для добавления:" if data.endswith("add") else
+                            "➖ Укажите количество, которое нужно убрать:") +
+                        "\nКаждый с новой строки. Например:\nкартофель 500 г\nмолоко 1 л\nяйца 4 шт")
+        return
+
+    if data == "pantry:recipe":
+        rows = await storage.pantry(user_id)
+        if not rows:
+            await send_text(message, "Сначала запишем продукты, которыми Вы располагаете.", pantry_keyboard())
+            return
+        await storage.set_mode(user_id, "pantry_recipe")
+        await send_text(message, "🥘 Отлично, продукты я вижу. Что предпочитаете: быстрое, сытное, лёгкое? "
+                        "Напишите пожелания, и я составлю рецепт из Ваших запасов.")
+        return
+
+    if data == "pantry:confirm_clear":
+        await send_text(message, "Удалить все записанные продукты? Это действие нельзя отменить.",
+                        keyboard([[("🧹 Да, удалить продукты", "pantry:clear"), ("Отмена", "view:pantry")]]))
+        return
+
+    if data == "pantry:clear":
+        await storage.clear_pantry(user_id)
+        await send_text(message, "📦 Запасы очищены. Когда появятся новые продукты, запишем их!", pantry_keyboard())
+        return
+
+    if data == "view:week":
+        plan = await storage.get_weekly_plan(user_id)
+        await send_text(message, format_day(plan, 0), week_keyboard(0)) if plan else await send_text(
+            message, "📅 Пока нет недельного меню.", keyboard([[("Создать меню", "mode:plan")]]))
+        return
+
+    if data.startswith("week:day:"):
+        plan = await storage.get_weekly_plan(user_id)
+        if not plan:
+            await send_text(message, "Сначала создайте меню.", main_keyboard())
+            return
+        try:
+            index = int(data.rsplit(":", 1)[1])
+            text = format_day(plan, index)
+        except (ValueError, IndexError):
+            return
+        await send_text(message, text, week_keyboard(index))
+        return
+
+    if data == "week:all":
+        plan = await storage.get_weekly_plan(user_id)
+        if plan:
+            await send_text(message, format_full_week(plan), week_keyboard(0))
+        return
+
+    if data.startswith("week:meal:"):
+        plan = await storage.get_weekly_plan(user_id)
+        if not plan:
+            await send_text(message, "Меню больше нет. Составим новое?", main_keyboard())
+            return
+        try:
+            _, _, day_raw, meal_raw = data.split(":")
+            day_index, meal_index = int(day_raw), int(meal_raw)
+            if not 0 <= day_index < 7 or not 0 <= meal_index < 3:
+                return
+        except (ValueError, IndexError):
+            return
+        meal_key = ("breakfast", "lunch", "dinner")[meal_index]
+        dish = plan["days"][day_index][meal_key]
+        await storage.set_mode(user_id, f"weekly:{day_index}:{meal_key}")
+        await send_text(message, f"👨‍🍳 {MEAL_NAMES[meal_index]}: {dish}\n"
+                        "Укажите порции и пожелания, например «на троих, без острого».")
+        return
+
     if data == "view:profile":
         user = await storage.get_user(user_id)
         await send_text(message, profile_text(user["preferences"]), profile_keyboard())
@@ -296,7 +475,9 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
     if data == "view:shop":
         user = await storage.get_user(user_id)
         recipe = user["last_recipe"]
-        await send_text(message, shopping_list(recipe) if recipe else "🛒 Сначала создайте или выберите рецепт.", main_keyboard())
+        await send_text(message,
+                        format_shopping_comparison(recipe, await storage.pantry(user_id)) if recipe else
+                        "🛒 Сначала создайте или выберите рецепт.", main_keyboard())
         return
 
     if data == "view:favorites":
@@ -314,8 +495,18 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
             favorite_id = int(data.split(":", 1)[1])
         except ValueError:
             return
-        recipe = await storage.select_favorite(user_id, favorite_id)
-        await send_text(message, format_recipe(recipe), recipe_keyboard()) if recipe else await send_text(message, "Рецепт не найден.", main_keyboard())
+        user = await storage.get_user(user_id)
+        restricted = bool(user["preferences"].get("allergens") or user["preferences"].get("excluded"))
+        recipe = await storage.select_favorite(user_id, favorite_id, activate=not restricted)
+        if recipe and restricted:
+            await send_text(message,
+                            "⚠️ Этот сохранённый рецепт НЕ проверен с учётом Ваших текущих ограничений. "
+                            "Я не активировал его для готовки. Составьте новый адаптированный рецепт.\n\n" +
+                            format_recipe(recipe), main_keyboard())
+        elif recipe:
+            await send_text(message, format_recipe(recipe), recipe_keyboard())
+        else:
+            await send_text(message, "Рецепт не найден.", main_keyboard())
         return
 
     if data == "cook:start":
@@ -325,6 +516,15 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         else:
             await storage.set_mode(user_id, "recipe")
             await send_text(message, "👨‍🍳 Для начала выберем блюдо. Что у Вас есть из продуктов?")
+        return
+
+    if data == "cook:previous":
+        session = await storage.current_cooking(user_id)
+        if not session:
+            await send_text(message, "Активной готовки нет.", main_keyboard())
+        else:
+            previous = await storage.set_cooking_step(user_id, session["step_index"] - 1)
+            await send_text(message, cooking_text(previous), cooking_keyboard())
         return
 
     if data == "cook:next":
