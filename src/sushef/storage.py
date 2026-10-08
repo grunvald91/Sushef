@@ -5,7 +5,8 @@ from time import time
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from .models import Base, Conversation, CookingSession, CookingTimer, Favorite, FermentationBatch, FermentationReading, PantryItem, PersonalMemory, RecipeArchive, RecipeFeedback, User, WeeklyPlan
@@ -24,6 +25,22 @@ class Storage:
 
     async def close(self) -> None:
         await self.engine.dispose()
+
+    async def verify_schema_revision(self, required: str = "0002_timers") -> None:
+        """Fail closed when migrations were skipped or the DB is incompatible."""
+        try:
+            async with self.engine.connect() as conn:
+                current = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+        except SQLAlchemyError as exc:
+            raise RuntimeError(
+                "База не подготовлена. Перед запуском выполните alembic upgrade head."
+            ) from exc
+        if current != required:
+            raise RuntimeError(
+                f"Несовместимая схема базы: {current!r}. "
+                f"Требуется версия {required}. Выполните alembic upgrade head "
+                "после создания резервной копии."
+            )
 
     @staticmethod
     async def _user(db: AsyncSession, user_id: int) -> User:
@@ -114,6 +131,7 @@ class Storage:
         async with self.sessions() as db:
             user = await self._user(db, user_id)
             user.last_recipe = recipe
+            await db.execute(delete(CookingSession).where(CookingSession.user_id == user_id))
             # Previous timers belong to the old recipe; stop reminders for it.
             await db.execute(update(CookingTimer).where(
                 CookingTimer.user_id == user_id,
