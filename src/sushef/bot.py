@@ -112,6 +112,51 @@ def fermentation_batch_text(batch: dict) -> str:
     return "\n".join(lines) + "\n\n" + SAFETY_REMINDER
 
 
+def memory_kind_keyboard() -> InlineKeyboardMarkup:
+    return keyboard(
+        [[(label[:50], "memory:kind:" + kind)]
+         for kind, label in MEMORY_KINDS.items()] +
+        [[("🧠 Просмотреть память", "view:memory"), ("🏠 Меню", "view:main")]]
+    )
+
+
+async def show_archive(message: Message, storage: Storage, user_id: int) -> None:
+    recipes = await storage.archived_recipes(user_id)
+    if not recipes:
+        await send_text(message, "📖 Пока нет приготовленных или придуманных рецептов. "
+                        "Новые рецепты будут сохраняться автоматически.", main_keyboard())
+        return
+    buttons = [[(item["recipe"].get("title", "Без названия")[:46],
+                 f"archive:open:{item['id']}")] for item in recipes]
+    buttons.append([("❤️ Избранное", "view:favorites"), ("🏠 Меню", "view:main")])
+    await send_text(message, "📖 Последние 15 созданных рецептов (сохранены автоматически):",
+                    keyboard(buttons))
+
+
+async def show_memory(message: Message, storage: Storage, user_id: int) -> None:
+    items = await storage.personal_memories(user_id, include_pending=True)
+    if not items:
+        await send_text(message, "🧠 Здесь пока пусто. Я сохраняю долговременные заметки "
+                        "только после Вашего явного подтверждения.", memory_kind_keyboard())
+        return
+    active = [x for x in items if x["status"] == "active"]
+    pending = [x for x in items if x["status"] == "pending"]
+    lines = ["🧠 Подтверждённая кулинарная память:"]
+    lines.extend(f"• {MEMORY_KINDS.get(x['kind'], x['kind'])}: {x['value']}"
+                 for x in active[:15])
+    if pending:
+        lines.append("\nОжидают подтверждения: " + str(len(pending)))
+    buttons = []
+    for item in pending[:5]:
+        buttons.append([("✅ Запомнить: " + item["value"][:25],
+                         f"memory:confirm:{item['id']}"),
+                        ("❌ Отмена", f"memory:remove:{item['id']}")])
+    buttons.extend([[("📝 Добавить заметку", "memory:choose")],
+                    [("🧹 Удалить отдельную запись", "memory:forget")],
+                    [("🏠 Главное меню", "view:main")]])
+    await send_text(message, "\n".join(lines), keyboard(buttons))
+
+
 def rating_keyboard() -> InlineKeyboardMarkup:
     return keyboard([
         [("😍 Великолепно", "rate:great"), ("👍 Вкусно", "rate:good")],
@@ -252,6 +297,39 @@ async def show_week_command(message: Message, storage: Storage) -> None:
         message, "📅 Сохранённого меню пока нет. Составим?", keyboard([[("Создать меню", "mode:plan")]]))
 
 
+@router.message(Command("recipes"))
+async def recipe_archive_command(message: Message, storage: Storage) -> None:
+    if await private_only(message) and message.from_user:
+        await show_archive(message, storage, message.from_user.id)
+
+
+@router.message(Command("memory"))
+async def personal_memory_command(message: Message, storage: Storage) -> None:
+    if await private_only(message) and message.from_user:
+        await show_memory(message, storage, message.from_user.id)
+
+
+@router.message(Command("remember"))
+async def remember_command(message: Message) -> None:
+    if await private_only(message):
+        await send_text(message, "🧠 Что хотите сохранить на будущее? "
+                        "Выберите тип записи. Перед сохранением я попрошу подтверждение.",
+                        memory_kind_keyboard())
+
+
+@router.message(Command("export_my_data"))
+async def export_my_data_command(message: Message, storage: Storage) -> None:
+    if not await private_only(message) or not message.from_user:
+        return
+    data = await storage.export_user_data(message.from_user.id)
+    payload = json.dumps(data, ensure_ascii=False, indent=2, default=str).encode("utf-8")
+    await message.answer_document(
+        BufferedInputFile(payload, filename="sushef-my-data.json"),
+        caption="🔐 Полный экспорт Ваших записей в JSON. "
+                "Файл содержит личные сведения — храните его в защищённом месте.",
+    )
+
+
 @router.message(Command("ferment"))
 async def fermentation_command(message: Message) -> None:
     if await private_only(message):
@@ -279,10 +357,15 @@ async def privacy(message: Message) -> None:
         await send_text(
             message,
             "🔒 Для работы сохраняются Ваш Telegram ID, выбранные настройки, "
-            "до 40 последних реплик диалога, рецепты, оценки блюд, записи о продуктах, недельное меню, партии ферментации, их замеры и шаги приготовления. "
+            "до 40 последних реплик диалога, автоматический архив рецептов, избранное, "
+            "подтверждённые и ожидающие подтверждения заметки, оценки блюд, продукты, "
+            "недельное меню, партии ферментации, их замеры и шаги приготовления. "
             "Запросы, история диалога и указанные предпочтения передаются провайдеру ClaudeHub "
             "для генерации ответа. Никаких сторонних рекламных рассылок бот не делает.\n\n"
-            "/reset — очистить диалог.\n/delete_me — полностью удалить сохранённые данные.\n"
+            "/reset — очистить только диалог; рецепты, профиль и память останутся.\n"
+            "/memory — просмотр и удаление подтверждённых заметок.\n"
+            "/export_my_data — скачать все личные записи.\n"
+            "/delete_me — удалить данные из рабочей базы (резервные копии имеют отдельный срок хранения).\n"
             "Не отправляйте в чат пароли и другую чувствительную информацию.",
         )
 
@@ -382,6 +465,24 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
         await storage.set_mode(user_id, "ask")
         updated = await storage.get_user(user_id)
         await send_text(message, "Прекрасно! Настройки обновлены.\n\n" + profile_text(updated["preferences"]), profile_keyboard())
+        return
+
+    if mode.startswith("memory:write:"):
+        kind = mode.split(":", 2)[2]
+        try:
+            pending_id = await storage.propose_memory(user_id, kind, text)
+        except ValueError as exc:
+            await send_text(message, "Не удалось записать заметку: " + str(exc) +
+                            "\nУточните её или воспользуйтесь /cancel.")
+            return
+        await storage.set_mode(user_id, "ask")
+        await send_text(
+            message,
+            "🧠 Вы предлагаете запомнить:\n«" + text + "»\n\n"
+            "Это постоянная запись или пожелание только на сегодня?",
+            keyboard([[("✅ Запомнить", f"memory:confirm:{pending_id}"),
+                       ("❌ Не сохранять", f"memory:remove:{pending_id}")]]),
+        )
         return
 
     if mode.startswith("pnew:"):
