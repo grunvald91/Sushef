@@ -35,3 +35,10 @@ SQLite хранится в постоянном Docker volume `sushef-data`. О�
 **Политика расходов:** GitHub Actions не создаём и не запускаем ради проверки. Деплой исключительно через локальный доступ к серверу. Существующие сервисы на сервере не трогать.
 
 Источники: [GitHub Secrets](https://docs.github.com/en/actions/concepts/security/secrets), [Docker Compose environment](https://docs.docker.com/compose/how-tos/environment-variables/set-environment-variables/).
+
+
+## Настройки расширенной версии
+
+После тестирования конкретного vision-маршрута можно включить `VISION_ENABLED=true` и задать `MAX_PHOTO_BYTES` (по умолчанию 4 МБ). Пока не проверена поддержка изображения в ClaudeHub, оставьте `VISION_ENABLED=false`.
+
+Новые таблицы `pantry_items` и `weekly_plans` создаются при старте. Для существующей базы перед обновлением сделайте резервную копию. Продакшен-обновления схемы следует переводить на Alembic.
