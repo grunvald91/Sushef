@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 from typing import Any
 
 from aiogram import F, Router
@@ -11,7 +12,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from .chef import Chef, RecipeFormatError, format_recipe
 from .fermentation import PROCESS_LABELS, fermentation_system_context, intake_text
 from .fermentation_journal import SAFETY_REMINDER, observation_text, parse_observation
-from .protocols import get_protocol, list_protocols, protocol_context, protocol_summary
+from .protocols import assess_process, get_protocol, list_protocols, protocol_context, protocol_summary
 from .pantry import format_quantity, format_shopping_comparison, parse_product_line
 from .weekly import DAY_NAMES, MEAL_NAMES, WeeklyPlanError, format_day, format_full_week
 from .config import Settings
@@ -87,7 +88,8 @@ def fermentation_batch_keyboard(batch_id: int, finished: bool) -> InlineKeyboard
     if not finished:
         buttons += [[("📝 Записать замер", f"ferment:observe:{batch_id}")],
                     [("🏁 Завершить наблюдение", f"ferment:finish:{batch_id}")]]
-    buttons += [[("🗑 Удалить партию", f"ferment:remove:{batch_id}")],
+    buttons += [[("🔎 Проверить контрольные условия", f"protocol:check:{batch_id}")],
+                [("🗑 Удалить партию", f"ferment:remove:{batch_id}")],
                 [("📓 Все партии", "ferment:list"), ("🔬 Раздел", "view:ferment")]]
     return keyboard(buttons)
 
@@ -653,6 +655,52 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
             message, "📓 Введите название партии (от 2 до 120 символов). "
             "Сушеф сохранит ID и версию источника рядом с журналом. "
             "Это не подтверждение соблюдения технологии или пригодности продукта."
+        )
+        return
+
+    if data.startswith("protocol:check:"):
+        try:
+            batch_id = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            return
+        batch = await storage.fermentation_batch(user_id, batch_id)
+        if not batch:
+            await send_text(message, "Партия недоступна.", fermentation_keyboard())
+            return
+        p = get_protocol(batch["protocol_id"]) if batch.get("protocol_id") else None
+        if not p:
+            await send_text(
+                message, "Для этой партии нет привязки к опубликованной версии "
+                "протокола. Сравнивать показатели автоматически нельзя.",
+                fermentation_batch_keyboard(batch_id, batch["finished"])
+            )
+            return
+        if batch["protocol_revision"] != p.revision:
+            await send_text(
+                message, "Каталог изменился с момента записи этой партии. "
+                "Автоматическое сравнение по другой версии запрещено.",
+                fermentation_batch_keyboard(batch_id, batch["finished"])
+            )
+            return
+        last = batch["readings"][-1] if batch["readings"] else {}
+        celsius = Decimal(str(last["temperature_c"])) if last.get("temperature_c") is not None else None
+        fahrenheit = (celsius * Decimal("9") / Decimal("5") + Decimal("32")) if celsius is not None else None
+        acidity = Decimal(str(last["ph"])) if last.get("ph") is not None else None
+        stage = next((s.code for s in p.stages if s.code == "ferment"), p.stages[0].code)
+        assessment = assess_process(
+            p.id, stage, fahrenheit, recipe_unchanged=None,
+            signs_of_spoilage=None, known_starter=None, ph=acidity
+        )
+        await send_text(
+            message,
+            "🔎 Предварительный скрининг (без гарантии безопасности)\n"
+            f"Рецептура: {p.id} / {p.revision}\n"
+            f"Статус: {assessment.status}\n"
+            + "\n".join("• " + reason for reason in assessment.notes)
+            + "\n\n❗ Это не разрешение пробовать или есть продукт. "
+              "Фактические пропорции, свежесть, санитария, культура и вся история "
+              "температур требуют самостоятельной проверки по источнику.",
+            fermentation_batch_keyboard(batch_id, batch["finished"])
         )
         return
 
