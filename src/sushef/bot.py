@@ -120,16 +120,26 @@ def memory_kind_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-async def show_archive(message: Message, storage: Storage, user_id: int) -> None:
-    recipes = await storage.archived_recipes(user_id)
+async def show_archive(message: Message, storage: Storage, user_id: int,
+                       page: int = 0) -> None:
+    if not 0 <= page <= 10000:
+        return
+    recipes = await storage.archived_recipes(user_id, limit=15, offset=page * 15)
     if not recipes:
         await send_text(message, "📖 Пока нет приготовленных или придуманных рецептов. "
                         "Новые рецепты будут сохраняться автоматически.", main_keyboard())
         return
     buttons = [[(item["recipe"].get("title", "Без названия")[:46],
                  f"archive:open:{item['id']}")] for item in recipes]
+    navigation = []
+    if page:
+        navigation.append(("⬅️ Ранее", f"archive:page:{page - 1}"))
+    if len(recipes) == 15:
+        navigation.append(("➡️ Далее", f"archive:page:{page + 1}"))
+    if navigation:
+        buttons.append(navigation)
     buttons.append([("❤️ Избранное", "view:favorites"), ("🏠 Меню", "view:main")])
-    await send_text(message, "📖 Последние 15 созданных рецептов (сохранены автоматически):",
+    await send_text(message, f"📖 Архив рецептов · страница {page + 1} (сохраняются автоматически):",
                     keyboard(buttons))
 
 
@@ -682,6 +692,117 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
 
     if data == "view:main":
         await send_text(message, "Какой прекрасный день, чтобы приготовить что-нибудь вкусное! 👨‍🍳", main_keyboard())
+        return
+
+    if data == "view:archive":
+        await show_archive(message, storage, user_id)
+        return
+
+    if data.startswith("archive:page:"):
+        try:
+            page = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            return
+        await show_archive(message, storage, user_id, page)
+        return
+
+    if data.startswith("archive:open:"):
+        try:
+            recipe_id = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            return
+        user = await storage.get_user(user_id)
+        restricted = bool(user["preferences"].get("allergens") or
+                          user["preferences"].get("excluded"))
+        recipe = await storage.select_archived_recipe(user_id, recipe_id,
+                                                     activate=not restricted)
+        if not recipe:
+            await send_text(message, "Рецепт недоступен.", main_keyboard())
+        elif restricted:
+            await send_text(
+                message,
+                "⚠️ Рецепт из архива не проверен на Ваши текущие пищевые ограничения. "
+                "Для готовки сформируйте новую адаптированную версию.\n\n"
+                + format_recipe(recipe), main_keyboard()
+            )
+        else:
+            await send_text(message, "📖 Восстановленный рецепт:\n\n" +
+                            format_recipe(recipe), recipe_keyboard())
+        return
+
+    if data == "view:memory":
+        await show_memory(message, storage, user_id)
+        return
+
+    if data == "memory:choose":
+        await send_text(message, "🧠 Что хотите добавить в долговременную память?",
+                        memory_kind_keyboard())
+        return
+
+    if data.startswith("memory:kind:"):
+        kind = data.split(":", 2)[2]
+        if kind not in MEMORY_KINDS:
+            return
+        await storage.set_mode(user_id, "memory:write:" + kind)
+        await send_text(message, "📝 Напишите одну постоянную кулинарную "
+                        "привычку или наблюдение. Например: "
+                        "«Я люблю соусы с лёгкой кислинкой». "
+                        "Запись будет предложена для подтверждения, а не сохранена тайно.")
+        return
+
+    if data.startswith("memory:confirm:"):
+        try:
+            fact_id = int(data.rsplit(":", 1)[1])
+            result = await storage.confirm_memory(user_id, fact_id)
+        except ValueError as exc:
+            await send_text(message, "Не удалось подтвердить запись: " + str(exc),
+                            memory_kind_keyboard())
+            return
+        await send_text(
+            message,
+            "🧠 Отлично, эту особенность Вашего вкуса теперь буду учитывать."
+            if result else "Заметка не найдена или уже обработана.",
+            memory_kind_keyboard(),
+        )
+        return
+
+    if data == "memory:forget":
+        facts = await storage.personal_memories(user_id, limit=50)
+        if not facts:
+            await send_text(message, "Активных заметок нет.", memory_kind_keyboard())
+            return
+        rows = [[("🗑 " + f["value"][:40], f"memory:askremove:{f['id']}")]
+                for f in facts]
+        rows.append([("↩️ К моей памяти", "view:memory")])
+        await send_text(message, "Выберите конкретную запись для удаления:", keyboard(rows))
+        return
+
+    if data.startswith("memory:askremove:"):
+        try:
+            fact_id = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            return
+        found = next((x for x in await storage.personal_memories(user_id, limit=50)
+                      if x["id"] == fact_id), None)
+        if not found:
+            await send_text(message, "Заметка уже удалена.", memory_kind_keyboard())
+            return
+        await send_text(
+            message,
+            "Удалить из долговременной памяти:\n«" + found["value"] + "»?",
+            keyboard([[("✅ Да, удалить", f"memory:remove:{fact_id}"),
+                       ("↩️ Отмена", "view:memory")]]),
+        )
+        return
+
+    if data.startswith("memory:remove:"):
+        try:
+            fact_id = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            return
+        deleted = await storage.remove_memory(user_id, fact_id)
+        await send_text(message, "🗑 Заметка удалена."
+                        if deleted else "Заметка не найдена.", memory_kind_keyboard())
         return
 
     if data.startswith("mode:"):
