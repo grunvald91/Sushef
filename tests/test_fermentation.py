@@ -13,7 +13,7 @@ from sushef.fermentation_journal import (
 
 @pytest.mark.parametrize("category", list(PROCESS_LABELS))
 def test_every_category_has_guided_scientific_context(category):
-    assert category in describe_process(category)
+    assert PROCESS_LABELS[category] in describe_process(category)
     prompt = fermentation_system_context(category)
     assert "не" in prompt.lower()
     assert "pH" in prompt
