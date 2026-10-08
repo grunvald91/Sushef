@@ -42,6 +42,23 @@ def upgrade() -> None:
                           server_default=""),
             )
 
+    # Preserve the current unsaved recipe from an existing v0.x profile.
+    # Favorites remain independent; new generations auto-archive in storage.py.
+    users = sa.table("users", sa.column("id", sa.BigInteger),
+                     sa.column("last_recipe", sa.JSON))
+    archive = sa.table(
+        "recipe_archive", sa.column("user_id", sa.BigInteger),
+        sa.column("recipe", sa.JSON), sa.column("origin", sa.String(32)),
+    )
+    rows = conn.execute(
+        sa.select(users.c.id, users.c.last_recipe).where(users.c.last_recipe.is_not(None))
+    )
+    for owner, recipe in rows:
+        if isinstance(recipe, dict):
+            conn.execute(archive.insert().values(
+                user_id=owner, recipe=recipe, origin="legacy_last"
+            ))
+
 
 def downgrade() -> None:
     # Destructive downgrade is intentionally disabled to preserve personal data.
