@@ -14,7 +14,8 @@ async def main() -> None:
     settings = load_settings()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     storage = Storage(settings.database_url)
-    await storage.create_tables()
+    # Schema changes are managed by Alembic, not create_all on live data.
+    await storage.verify_schema_revision()
     chef = Chef(settings)
     bot = Bot(token=settings.telegram_bot_token)
     dp = Dispatcher()
