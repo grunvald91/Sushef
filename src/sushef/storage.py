@@ -144,6 +144,11 @@ class Storage:
             if activate:
                 user = await self._user(db, user_id)
                 user.last_recipe = favorite.recipe
+                await db.execute(update(CookingTimer).where(
+                    CookingTimer.user_id == user_id,
+                    CookingTimer.status.in_(("active", "sending"))
+                ).values(status="cancelled"))
+                await db.execute(delete(CookingSession).where(CookingSession.user_id == user_id))
             await db.commit()
             return favorite.recipe
 
@@ -157,11 +162,16 @@ class Storage:
             if cooking is None:
                 cooking = CookingSession(user_id=user_id, recipe=recipe, step_index=0)
                 db.add(cooking)
-            else:
+            elif cooking.recipe != recipe:
                 cooking.recipe, cooking.step_index = recipe, 0
+                await db.execute(update(CookingTimer).where(
+                    CookingTimer.user_id == user_id,
+                    CookingTimer.status.in_(("active", "sending"))
+                ).values(status="cancelled"))
+            # Re-entering cooking for the SAME recipe resumes the last step.
             user.mode = "cook"
             await db.commit()
-            return {"recipe": recipe, "step_index": 0}
+            return {"recipe": recipe, "step_index": cooking.step_index}
 
     async def advance_cooking(self, user_id: int) -> dict[str, Any] | None:
         async with self.sessions() as db:
@@ -455,6 +465,8 @@ class Storage:
         """
         if type(minutes) is not int or not MIN_MINUTES <= minutes <= MAX_MINUTES:
             raise ValueError(f"Таймер должен длиться {MIN_MINUTES}–{MAX_MINUTES} минут")
+        if chat_id != user_id:
+            raise ValueError("Таймер можно запускать только в личном чате")
         if not label or len(label) > 120:
             raise ValueError("Неверная подпись таймера")
         now_ts = int(time()) if now_ts is None else now_ts
@@ -599,6 +611,11 @@ class Storage:
                 if prefs.get("allergens") or prefs.get("excluded"):
                     return None
                 user.last_recipe = row.recipe
+                await db.execute(update(CookingTimer).where(
+                    CookingTimer.user_id == user_id,
+                    CookingTimer.status.in_(("active", "sending"))
+                ).values(status="cancelled"))
+                await db.execute(delete(CookingSession).where(CookingSession.user_id == user_id))
             await db.commit()
             return row.recipe
 
