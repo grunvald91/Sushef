@@ -24,6 +24,9 @@ async def deliver_due_timers(bot: Bot, storage: Storage,
     records = await storage.claim_due_timers(now_ts=now_ts, limit=20)
     sent = failed = 0
     for record in records:
+        # The user may have cancelled/reset the timer after it was claimed.
+        if not await storage.timer_still_sending(record["id"]):
+            continue
         try:
             await bot.send_message(
                 chat_id=record["chat_id"], text=timer_alert(record),
