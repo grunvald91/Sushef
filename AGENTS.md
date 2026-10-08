@@ -72,3 +72,13 @@
 - Таймеры сохраняются при переходе между шагами; отменяются при /reset, /delete_me, смене рецепта и аллергенов/исключений. Возобновление готовки для **того же** рецепта не сбрасывает шаг 0.
 - Истечение времени — **НЕ** признак безопасной готовности мяса/рыбы/птицы и НЕ проверенная ферментационная технология. Автоматически переходить дальше запрещено.
 - Схема БД требует Alembic revision `0002_timers` до запуска production, rollback не должен уничтожать пользовательские таймеры. Полное описание `docs/COOKING_TIMERS.md`.
+
+
+## Codespaces → production без Actions
+
+- Использовать `scripts/deploy_via_codespaces.sh` только из Codespace **grunvald91/Sushef** на ветке `feat/guided-cooking-timers`; скрипт проверяет SHA, установку Python, `pytest`, SSH, отдельный Docker-проект, создание бэкапа, схему и health-check.
+- Сервер `155.212.162.47`, каталог `/opt/sushef`, Compose project name `sushef`, volume `sushef_pgdata`. Не изменять чужие Docker containers, volumes, Nginx и директории ServGo/AI Growth OS.
+- Секреты получать только из защищённого окружения Codespaces `SERVER_SSH_KEY`, `TELEGRAM_BOT_TOKEN`, `CLAUDEHUB_API_KEY`, не читать Actions secrets и не логировать значения. Если секреты недоступны, НЕ пытаться вытащить их обходным способом.
+- Первым проверять тесты; при существующем volume перед миграцией обязательно `pg_dump -Fc`, и запрещено мигрировать без проверенной резервной копии. При ошибке НЕ удалять том.
+- Не включать автодеплой в `postCreateCommand`/GitHub Actions. Production меняется только после ручного запуска VS Code Task и его успешного выполнения.
+- После Docker-start дополнительно выполнить минимальные Telegram и ClaudeHub проверки (один тестовый LLM запрос), затем ручной smoke test recipe/timer. Только тогда заявлять production healthy. Подробности `docs/CODESPACES_DEPLOY.md`.
