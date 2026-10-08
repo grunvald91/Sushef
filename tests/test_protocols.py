@@ -51,7 +51,7 @@ def test_stage_boundaries_are_specific_to_each_process():
 
 def test_never_returns_safe_status_even_with_good_inputs():
     for protocol in PROTOCOLS:
-        stage = next(s for s in protocol.stages if s.code == "ferment")
+        stage = next((s for s in protocol.stages if s.code == "ferment"), protocol.stages[0])
         temp = Decimal("72") if protocol.category == "vegetables" else None
         assessment = assess_process(
             protocol.id, stage.code, temp, recipe_unchanged=True,
