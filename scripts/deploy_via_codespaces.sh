@@ -70,7 +70,14 @@ ssh "${ssh_opts[@]}" "$remote" 'test "$(id -u)" -eq 0 && docker compose version 
 
 say "Checking the isolated Sushef directory on the server..."
 ssh "${ssh_opts[@]}" "$remote" \
-  'set -eu; install -d -m 700 /opt/sushef /opt/sushef/releases /opt/sushef/shared /opt/sushef/backups; test ! -e /opt/sushef/current || test -L /opt/sushef/current' ||
+  'set -eu;
+   if [ -d /opt/sushef ] && [ ! -d /opt/sushef/releases ]; then
+     if [ -n "$(find /opt/sushef -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+       echo "Non-Sushef data already exists under /opt/sushef" >&2; exit 1;
+     fi
+   fi
+   test ! -e /opt/sushef/current || test -L /opt/sushef/current;
+   install -d -m 700 /opt/sushef /opt/sushef/releases /opt/sushef/shared /opt/sushef/backups' ||
   die "/opt/sushef conflicts with an existing non-Sushef installation."
 
 # Bootstrap secrets ONLY on first deployment. If the server already has a
