@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+from time import time
 from decimal import Decimal
 from typing import Any
 
@@ -11,6 +12,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from .chef import Chef, RecipeFormatError, format_recipe
+from .timers import TIMER_PRESETS, MAX_MINUTES, suggested_timer, timer_progress, timer_start_text
 from .memory import MEMORY_KINDS, PROFILE_FIELDS, short_memory_context
 from .fermentation import PROCESS_LABELS, fermentation_system_context, intake_text
 from .fermentation_journal import SAFETY_REMINDER, observation_text, parse_observation
@@ -200,15 +202,58 @@ def cooking_text(session: dict[str, Any]) -> str:
     index = session["step_index"]
     steps = recipe.get("steps", [])
     if index >= len(steps):
-        return "🎉 Готово! Вы прекрасно потрудились. Приятного аппетита!"
-    return f"👨‍🍳 {recipe['title']}\nШаг {index + 1}/{len(steps)}:\n\n{steps[index]}\n\nНапишите вопрос, если что-то непонятно."
+        return ("🎉 Все шаги просмотрены! Проверьте фактическую готовность "
+                "и безопасную температуру блюда, прежде чем подавать.")
+    hint = suggested_timer(recipe, index)
+    timer_note = (f"\n\n⏱ Рекомендуемый таймер: {hint['minutes']} мин — {hint['label']}."
+                  if hint else
+                  "\n\n⏱ При необходимости поставьте таймер вручную.")
+    return (f"👨‍🍳 {recipe['title']}\nШаг {index + 1}/{len(steps)}:"
+            f"\n\n{steps[index]}" + timer_note +
+            "\nОтсчёт запускается только по Вашей кнопке. "
+            "Время не заменяет проверку готовности.\n\n"
+            "Напишите вопрос, если что-то непонятно.")
 
 
 def cooking_keyboard() -> InlineKeyboardMarkup:
     return keyboard([
         [("⬅️ Предыдущий", "cook:previous"), ("✅ Следующий", "cook:next")],
+        [("⏱ Поставить таймер", "cook:timer"), ("🔔 Мои таймеры", "view:timers")],
         [("🥘 Показать рецепт", "recipe:show"), ("🏠 Меню", "view:main")],
     ])
+
+
+def timer_choice_keyboard(session: dict) -> InlineKeyboardMarkup:
+    rows = []
+    hint = suggested_timer(session["recipe"], session["step_index"])
+    if hint:
+        rows.append([(f"⏱ Рекомендовано {hint['minutes']} мин", "timer:start:hint")])
+    for i in range(0, len(TIMER_PRESETS), 3):
+        rows.append([(f"{n} мин", f"timer:start:{n}") for n in TIMER_PRESETS[i:i+3]])
+    rows.append([("✏️ Своё время", "timer:custom"), ("🔔 Активные", "view:timers")])
+    rows.append([("👨‍🍳 Вернуться к шагу", "cook:show")])
+    return keyboard(rows)
+
+
+async def show_timers(message: Message, storage: Storage, user_id: int) -> None:
+    timers = await storage.user_timers(user_id)
+    if not timers:
+        await send_text(
+            message, "🔔 Активных таймеров нет. "
+            "Откройте готовку и нажмите «Поставить таймер».",
+            keyboard([[("👨‍🍳 К приготовлению", "cook:show"), ("🏠 Меню", "view:main")]])
+        )
+        return
+    buttons = []
+    lines = ["🔔 Ваши действующие таймеры:"]
+    for t in timers:
+        lines.append(
+            f"• №{t['id']}: {t['recipe_title']}, шаг {t['step_index'] + 1}. "
+            f"{t['minutes']} мин · {timer_progress(t)}\n  {t['label']}"
+        )
+        buttons.append([(f"🛑 Отменить №{t['id']}", f"timer:cancel:{t['id']}")])
+    buttons.append([("👨‍🍳 К приготовлению", "cook:show"), ("🏠 Меню", "view:main")])
+    await send_text(message, "\n".join(lines), keyboard(buttons))
 
 
 def pantry_keyboard() -> InlineKeyboardMarkup:
@@ -277,7 +322,7 @@ async def help_menu(message: Message) -> None:
             message,
             "👨‍🍳 Сушеф поможет придумать рецепт, спасти блюдо, составить меню "
             "и провести Вас по шагам приготовления.\n\n"
-            "Команды: /start, /menu, /help, /profile, /recipes, /memory, /remember, /export_my_data, /pantry, /week, /ferment, /reset, /privacy, /delete_me.",
+            "Команды: /start, /menu, /help, /profile, /recipes, /memory, /remember, /export_my_data, /timers, /pantry, /week, /ferment, /reset, /privacy, /delete_me.",
             main_keyboard(),
         )
 
@@ -305,6 +350,12 @@ async def show_week_command(message: Message, storage: Storage) -> None:
     plan = await storage.get_weekly_plan(message.from_user.id)
     await send_text(message, format_day(plan, 0), week_keyboard(0)) if plan else await send_text(
         message, "📅 Сохранённого меню пока нет. Составим?", keyboard([[("Создать меню", "mode:plan")]]))
+
+
+@router.message(Command("timers"))
+async def list_timers_command(message: Message, storage: Storage) -> None:
+    if await private_only(message) and message.from_user:
+        await show_timers(message, storage, message.from_user.id)
 
 
 @router.message(Command("recipes"))
@@ -369,7 +420,7 @@ async def privacy(message: Message) -> None:
             "🔒 Для работы сохраняются Ваш Telegram ID, выбранные настройки, "
             "до 40 последних реплик диалога, автоматический архив рецептов, избранное, "
             "подтверждённые и ожидающие подтверждения заметки, оценки блюд, продукты, "
-            "недельное меню, партии ферментации, их замеры и шаги приготовления. "
+            "недельное меню, таймеры и время их срабатывания, партии ферментации, их замеры и шаги приготовления. "
             "Запросы, история диалога и указанные предпочтения передаются провайдеру ClaudeHub "
             "для генерации ответа. Никаких сторонних рекламных рассылок бот не делает.\n\n"
             "/reset — очистить только диалог; рецепты, профиль и память останутся.\n"
