@@ -54,3 +54,31 @@ def test_old_fermentation_rows_survive_migration_and_upgrade_is_repeatable(tmp_p
     assert row == ("Наша капуста", "", "")
     assert con.execute("SELECT count(*) FROM recipe_archive").fetchone()[0] == 0
     con.close()
+
+
+def test_legacy_current_recipe_is_backfilled_without_erasing_original(tmp_path):
+    path = tmp_path / "profile-legacy.db"
+    con = sqlite3.connect(path)
+    con.executescript("""
+        CREATE TABLE users(
+          id BIGINT PRIMARY KEY, mode VARCHAR(32) NOT NULL,
+          preferences JSON NOT NULL, last_recipe JSON,
+          usage_day VARCHAR(10) NOT NULL, usage_count INTEGER NOT NULL
+        );
+        INSERT INTO users(id,mode,preferences,last_recipe,usage_day,usage_count)
+        VALUES(77, 'ask', '{}',
+               '{"title":"Каша","ingredients":[],"steps":["Кипятить"]}',
+               '', 0);
+    """)
+    con.commit()
+    con.close()
+    upgrade(path)
+    con = sqlite3.connect(path)
+    original = con.execute("SELECT last_recipe FROM users WHERE id=77").fetchone()[0]
+    archived = con.execute(
+        "SELECT recipe,origin FROM recipe_archive WHERE user_id=77"
+    ).fetchone()
+    assert '"Каша"' in original
+    assert '"Каша"' in archived[0]
+    assert archived[1] == "legacy_last"
+    con.close()
