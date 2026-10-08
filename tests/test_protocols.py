@@ -108,3 +108,33 @@ def test_bad_protocol_or_sensor_input_rejected(invalid):
 def test_sensitive_topics_remain_pending_until_specific_source():
     assert {"koji", "natto", "enzymes", "cold", "warm"}.issubset(PENDING_TOPICS)
     assert not any(p.category == "enzymes" for p in list_protocols())
+
+
+def test_brine_vinegar_and_pasteurized_milk_are_not_optional_claims():
+    cabbage = assess_process(
+        "nchfp-sauerkraut", "ferment", Decimal("72"),
+        recipe_unchanged=True, signs_of_spoilage=False,
+        brine_submerged=False,
+    )
+    assert cabbage.status == "STOP"
+    dill = assess_process(
+        "nchfp-dill-pickles", "ferment", Decimal("72"),
+        recipe_unchanged=True, signs_of_spoilage=False,
+        brine_submerged=True, five_percent_vinegar=False,
+    )
+    assert dill.status == "STOP"
+    yogurt = assess_process(
+        "usu-yogurt", "ferment", None,
+        recipe_unchanged=True, signs_of_spoilage=False,
+        known_starter=True, pasteurized_milk=False,
+    )
+    assert yogurt.status == "STOP"
+
+
+def test_no_red_flags_still_asks_to_check_original_source():
+    assessment = assess_process(
+        "nchfp-sauerkraut", "ferment", Decimal("72"),
+        recipe_unchanged=True, signs_of_spoilage=False, brine_submerged=True,
+    )
+    assert assessment.status == "CHECK_SOURCE"
+    assert all(x not in assessment.notes for x in ("SAFE", "EDIBLE"))
