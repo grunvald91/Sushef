@@ -287,6 +287,8 @@ def protocol_summary(p: VerifiedProtocol) -> str:
         + "\n".join("• " + s for s in p.stop_rules)
         + "\n\nЗапреты на перенос/изменения:\n"
         + "\n".join("• " + s for s in p.restrictions)
+        + "\n\nОжидаемые изменения продукта (не тест на безопасность):\n"
+        + "\n".join("• " + s for s in p.expected_changes)
         + ("\n\nПримечание: " + p.footnote if p.footnote else "")
         + "\n\n⚠️ Перед использованием откройте оригинальный источник полностью. "
           "Описание здесь не заменяет инструкции по упаковке, хранению и "
@@ -402,7 +404,7 @@ def validate_catalog() -> None:
         if not (p.id and p.revision and p.source_url.startswith("https://")
                 and p.publisher and p.checked_on and p.stages
                 and p.ingredients and p.critical_limits and p.stop_rules
-                and p.restrictions):
+                and p.restrictions and p.expected_changes):
             raise ValueError(f"Неполная метаинформация протокола {p.id}")
         if p.status != "source_documented":
             raise ValueError(f"Нельзя выставить непроверенный рецепт как готовый: {p.id}")
