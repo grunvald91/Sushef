@@ -619,11 +619,20 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
                 query = text
             recipe = await chef.recipe(query, preferences)
             await storage.set_recipe(user_id, recipe)
+            await storage.add_exchange(
+                user_id, text, "Создан рецепт: " + recipe["title"] +
+                ". Рецепт сохранён автоматически в личном архиве."
+            )
             await storage.set_mode(user_id, "ask")
-            await send_text(message, "Ваше кулинарное приключение начинается! 🥘\n\n" + format_recipe(recipe), recipe_keyboard())
+            await send_text(message, "Ваш рецепт уже в личном архиве! 🥘\n\n" +
+                            format_recipe(recipe), recipe_keyboard())
         elif mode == "plan":
             plan = await chef.weekly_plan(text, preferences, await storage.pantry(user_id))
             await storage.save_weekly_plan(user_id, plan)
+            await storage.add_exchange(
+                user_id, text, "Составлено недельное меню на 7 дней. "
+                "Оно сохранено в личном разделе «Моё меню»."
+            )
             await storage.set_mode(user_id, "ask")
             await send_text(message, "📅 Меню на неделю готово! Начнём с понедельника.\n\n" +
                             format_day(plan, 0), week_keyboard(0))
