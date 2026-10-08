@@ -3,14 +3,16 @@ from sushef.bot import main_keyboard, profile_text
 
 def test_main_keyboard_has_fermentation_entry():
     markup = main_keyboard()
-    assert len(markup.inline_keyboard) == 6
-    assert sum(len(row) for row in markup.inline_keyboard) == 11
+    assert len(markup.inline_keyboard) == 7
+    assert sum(len(row) for row in markup.inline_keyboard) == 13
     data = {button.callback_data for row in markup.inline_keyboard for button in row}
     assert "mode:recipe" in data
     assert "cook:start" in data
     assert "view:pantry" in data
     assert "view:week" in data
     assert "view:ferment" in data
+    assert "view:archive" in data
+    assert "view:memory" in data
 
 
 def test_profile_display_defaults():
@@ -59,3 +61,16 @@ def test_science_ids_fit_telegram_callback_limit():
     for item in CARDS:
         assert len(("science:view:" + item.id).encode("utf-8")) <= 64
         assert len(("science:ask:" + item.id).encode("utf-8")) <= 64
+
+
+def test_personal_profile_memory_and_archive_actions():
+    from sushef.bot import memory_kind_keyboard, profile_keyboard
+    from sushef.memory import PROFILE_FIELDS, MEMORY_KINDS
+    profile = {b.callback_data for row in profile_keyboard().inline_keyboard for b in row}
+    for field in PROFILE_FIELDS:
+        assert "pref:" + field in profile
+    memory = {b.callback_data for row in memory_kind_keyboard().inline_keyboard for b in row}
+    for kind in MEMORY_KINDS:
+        assert "memory:kind:" + kind in memory
+    for value in memory | profile:
+        assert len(value.encode("utf-8")) <= 64
