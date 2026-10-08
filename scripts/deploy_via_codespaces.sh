@@ -21,6 +21,8 @@ branch="$(git symbolic-ref -q --short HEAD)" || die "Checkout a branch rather th
 sha="$(git rev-parse HEAD)"
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "Invalid commit SHA"
 [ -f scripts/remote_sushef_apply.sh ] || die "Missing remote rollout script."
+# Parse both scripts before any SSH or server side effects.
+bash -n scripts/deploy_via_codespaces.sh scripts/remote_sushef_apply.sh || die "Invalid Bash syntax."
 
 host="${SUSHEF_SERVER_HOST:-155.212.162.47}"
 user="${SUSHEF_SERVER_USER:-root}"
