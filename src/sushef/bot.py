@@ -9,6 +9,8 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from .chef import Chef, RecipeFormatError, format_recipe
+from .fermentation import PROCESS_LABELS, fermentation_system_context, intake_text
+from .fermentation_journal import SAFETY_REMINDER, observation_text, parse_observation
 from .pantry import format_quantity, format_shopping_comparison, parse_product_line
 from .weekly import DAY_NAMES, MEAL_NAMES, WeeklyPlanError, format_day, format_full_week
 from .config import Settings
@@ -49,6 +51,7 @@ def main_keyboard() -> InlineKeyboardMarkup:
         [("❤️ Мои рецепты", "view:favorites"), ("🛒 Покупки", "view:shop")],
         [("📦 Мои продукты", "view:pantry"), ("📆 Моё меню", "view:week")],
         [("🥗 Мой профиль", "view:profile"), ("💬 Спросить шефа", "mode:ask")],
+        [("🔬 Микробиология и ферментация", "view:ferment")],
     ])
 
 
@@ -59,6 +62,48 @@ def recipe_keyboard() -> InlineKeyboardMarkup:
         [("😋 Оценить результат", "view:rating")],
         [("🏠 Главное меню", "view:main")],
     ])
+
+
+def fermentation_keyboard() -> InlineKeyboardMarkup:
+    return keyboard([
+        [("❄️ Холодная ферментация", "ferment:guide:cold")],
+        [("🌡 Тёплая/горячая ферментация", "ferment:guide:warm")],
+        [("🥬 Молочнокислые овощи", "ferment:guide:vegetables")],
+        [("🥛 Йогурт и молочные", "ferment:guide:dairy")],
+        [("🍞 Закваски и тесто", "ferment:guide:sourdough")],
+        [("🍄 Кодзи и пищевые грибные культуры", "ferment:guide:koji")],
+        [("🧪 Внешние пищевые ферменты", "ferment:guide:enzymes")],
+        [("🦠 Полезные пищевые культуры", "ferment:guide:cultures")],
+        [("🔬 Другие процессы", "ferment:guide:other")],
+        [("📓 Журнал ферментации", "ferment:list")],
+        [("🏠 Главное меню", "view:main")],
+    ])
+
+
+def fermentation_batch_keyboard(batch_id: int, finished: bool) -> InlineKeyboardMarkup:
+    buttons = []
+    if not finished:
+        buttons += [[("📝 Записать замер", f"ferment:observe:{batch_id}")],
+                    [("🏁 Завершить наблюдение", f"ferment:finish:{batch_id}")]]
+    buttons += [[("🗑 Удалить партию", f"ferment:remove:{batch_id}")],
+                [("📓 Все партии", "ferment:list"), ("🔬 Раздел", "view:ferment")]]
+    return keyboard(buttons)
+
+
+def fermentation_batch_text(batch: dict) -> str:
+    label = PROCESS_LABELS.get(batch["category"], "Неизвестный процесс")
+    state = "завершено наблюдение" if batch["finished"] else "наблюдение продолжается"
+    lines = [f"📓 {batch['name']}", label, f"Статус: {state}"]
+    if batch.get("protocol_source"):
+        lines.append("Источник по словам пользователя (не проверен): " + batch["protocol_source"])
+    else:
+        lines.append("⚠️ Проверенный источник технологии не указан.")
+    lines.append("")
+    for observation in batch["readings"]:
+        lines.append(f"• {observation['observed_at'][:16]}: {observation_text(observation)}")
+    if not batch["readings"]:
+        lines.append("Измерений пока нет.")
+    return "\n".join(lines) + "\n\n" + SAFETY_REMINDER
 
 
 def rating_keyboard() -> InlineKeyboardMarkup:
@@ -168,7 +213,7 @@ async def help_menu(message: Message) -> None:
             message,
             "👨‍🍳 Сушеф поможет придумать рецепт, спасти блюдо, составить меню "
             "и провести Вас по шагам приготовления.\n\n"
-            "Команды: /start, /menu, /help, /profile, /pantry, /week, /reset, /privacy, /delete_me.",
+            "Команды: /start, /menu, /help, /profile, /pantry, /week, /ferment, /reset, /privacy, /delete_me.",
             main_keyboard(),
         )
 
@@ -198,6 +243,19 @@ async def show_week_command(message: Message, storage: Storage) -> None:
         message, "📅 Сохранённого меню пока нет. Составим?", keyboard([[("Создать меню", "mode:plan")]]))
 
 
+@router.message(Command("ferment"))
+async def fermentation_command(message: Message) -> None:
+    if await private_only(message):
+        await send_text(
+            message,
+            "🔬 Лаборатория вкуса: ферментация, полезные пищевые культуры и ферменты.\n"
+            "Тёплый процесс — не значит безопасный для любого продукта. "
+            "Температура, культура и срок зависят от конкретного протокола.\n\n"
+            "Выберите направление:",
+            fermentation_keyboard(),
+        )
+
+
 @router.message(Command("reset", "cancel"))
 async def reset_dialog(message: Message, storage: Storage) -> None:
     if not await private_only(message) or not message.from_user:
@@ -212,7 +270,7 @@ async def privacy(message: Message) -> None:
         await send_text(
             message,
             "🔒 Для работы сохраняются Ваш Telegram ID, выбранные настройки, "
-            "до 40 последних реплик диалога, рецепты, оценки блюд, записи о продуктах, недельное меню и шаги приготовления. "
+            "до 40 последних реплик диалога, рецепты, оценки блюд, записи о продуктах, недельное меню, партии ферментации, их замеры и шаги приготовления. "
             "Запросы, история диалога и указанные предпочтения передаются провайдеру ClaudeHub "
             "для генерации ответа. Никаких сторонних рекламных рассылок бот не делает.\n\n"
             "/reset — очистить диалог.\n/delete_me — полностью удалить сохранённые данные.\n"
@@ -313,6 +371,47 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
         await send_text(message, "Прекрасно! Настройки обновлены.\n\n" + profile_text(updated["preferences"]), profile_keyboard())
         return
 
+    if mode.startswith("fnew:"):
+        category = mode.split(":", 1)[1]
+        try:
+            name, delimiter, source = text.partition("|")
+            batch_id = await storage.create_fermentation_batch(
+                user_id, category, name.strip(), source.strip() if delimiter else "")
+        except ValueError as exc:
+            await send_text(message, "Не получилось создать партию: " + str(exc))
+            return
+        await storage.set_mode(user_id, "ask")
+        batch = await storage.fermentation_batch(user_id, batch_id)
+        await send_text(message, "📓 Партия записана для наблюдений, но это НЕ проверка "
+                        "безопасности технологии.\n\n" +
+                        fermentation_batch_text(batch),
+                        fermentation_batch_keyboard(batch_id, False))
+        return
+
+    if mode.startswith("flog:"):
+        try:
+            batch_id = int(mode.split(":", 1)[1])
+            obs = parse_observation(text)
+            saved = await storage.log_fermentation(
+                user_id, batch_id,
+                str(obs.temperature_c) if obs.temperature_c is not None else None,
+                str(obs.ph) if obs.ph is not None else None,
+                obs.note,
+            )
+        except ValueError as exc:
+            await send_text(message, "Замер не записан: " + str(exc) +
+                            "\nПример: t=22; ph=4.1; note=появились пузырьки")
+            return
+        await storage.set_mode(user_id, "ask")
+        if not saved:
+            await send_text(message, "Партия недоступна или уже завершена.", fermentation_keyboard())
+            return
+        batch = await storage.fermentation_batch(user_id, batch_id)
+        await send_text(message, "📝 Наблюдение записано.\n\n" +
+                        fermentation_batch_text(batch),
+                        fermentation_batch_keyboard(batch_id, batch["finished"]))
+        return
+
     if mode.startswith("pantry:"):
         action = mode.split(":", 1)[1]
         if action not in {"add", "remove"}:
@@ -380,6 +479,14 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
         else:
             history = await storage.get_history(user_id)
             context = ""
+            if mode.startswith("ferment:"):
+                category = mode.split(":", 1)[1]
+                if category in PROCESS_LABELS:
+                    context = fermentation_system_context(category)
+                    mode = "ferment"
+                else:
+                    await storage.set_mode(user_id, "ask")
+                    mode = "ask"
             if mode == "cook":
                 cooking = await storage.current_cooking(user_id)
                 if cooking:
@@ -389,7 +496,9 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
                     mode = "ask"
             answer = await chef.answer(mode, text, preferences, history, context)
             await storage.add_exchange(user_id, text, answer)
-            await send_text(message, answer, cooking_keyboard() if mode == "cook" else main_keyboard())
+            await send_text(message, answer,
+                            cooking_keyboard() if mode == "cook" else
+                            fermentation_keyboard() if mode == "ferment" else main_keyboard())
     except (RecipeFormatError, WeeklyPlanError):
         logger.warning("Model returned malformed structured culinary response")
         await send_text(message, "Не удалось оформить рецепт или меню без ошибок. Попробуйте переформулировать запрос.", main_keyboard())
@@ -424,6 +533,130 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         if mode in MODE_PROMPTS:
             await storage.set_mode(user_id, mode)
             await send_text(message, MODE_PROMPTS[mode])
+        return
+
+    if data == "view:ferment":
+        await send_text(
+            message,
+            "🔬 Лаборатория Сушефа. Мы разбираем не только вкус, но и биохимию. "
+            "Выбирайте культурный процесс, пищевой фермент или журнал партии. "
+            "При неопределённости лучше остановиться и проверить протокол.",
+            fermentation_keyboard(),
+        )
+        return
+
+    if data.startswith("ferment:guide:"):
+        category = data.split(":", 2)[2]
+        if category not in PROCESS_LABELS:
+            return
+        await storage.set_mode(user_id, f"ferment:{category}")
+        await send_text(message, intake_text(category),
+                        keyboard([[("📓 Записать новую партию", f"ferment:new:{category}")],
+                                  [("🔬 Все направления", "view:ferment")]]))
+        return
+
+    if data.startswith("ferment:new:"):
+        category = data.split(":", 2)[2]
+        if category not in PROCESS_LABELS:
+            return
+        await storage.set_mode(user_id, f"fnew:{category}")
+        await send_text(message, "📓 Введите название и, если есть, проверенный источник:\n"
+                        "Капуста 08.10 | NCHFP sauerkraut\n\n"
+                        "После знака «|» пишите название или ссылку на конкретный протокол. "
+                        "Сушеф сохранит эту информацию, но не будет автоматически считать "
+                        "источник или продукт безопасным.")
+        return
+
+    if data == "ferment:list":
+        batches = await storage.list_fermentation_batches(user_id)
+        if not batches:
+            await send_text(message, "📓 Наблюдаемых партий пока нет. "
+                            "Выберите тип ферментации и создайте первую.",
+                            fermentation_keyboard())
+            return
+        buttons = [[("📓 " + row["name"][:40], f"fbat:{row['id']}")] for row in batches]
+        buttons += [[("🔬 К направлениям", "view:ferment")]]
+        await send_text(message, "📓 Ваши партии (последние 20):", keyboard(buttons))
+        return
+
+    if data.startswith("fbat:"):
+        try:
+            batch_id = int(data.split(":", 1)[1])
+        except ValueError:
+            return
+        batch = await storage.fermentation_batch(user_id, batch_id)
+        if batch:
+            await send_text(message, fermentation_batch_text(batch),
+                            fermentation_batch_keyboard(batch_id, batch["finished"]))
+        else:
+            await send_text(message, "Партия не найдена.", fermentation_keyboard())
+        return
+
+    if data.startswith("ferment:observe:"):
+        try:
+            batch_id = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            return
+        batch = await storage.fermentation_batch(user_id, batch_id)
+        if not batch or batch["finished"]:
+            await send_text(message, "Партия недоступна или завершена.", fermentation_keyboard())
+            return
+        await storage.set_mode(user_id, f"flog:{batch_id}")
+        await send_text(message, "📝 Введите замер (градусы Цельсия):\n"
+                        "t=22; ph=4.1; note=появились пузырьки\n\n"
+                        "Можно указать только одно или два поля. "
+                        "Запись измерения НЕ подтверждает безопасность продукта.")
+        return
+
+    if data.startswith("ferment:finish:"):
+        try:
+            batch_id = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            return
+        batch = await storage.fermentation_batch(user_id, batch_id)
+        if not batch:
+            return
+        await send_text(
+            message, "🏁 Завершить ведение журнала этой партии? "
+            "Статус «завершено» не означает, что продукт можно употреблять.",
+            keyboard([[("Завершить журнал", f"ferment:confirmfinish:{batch_id}")],
+                      [("Отмена", f"fbat:{batch_id}")]]),
+        )
+        return
+
+    if data.startswith("ferment:confirmfinish:"):
+        try:
+            batch_id = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            return
+        result = await storage.finish_fermentation_batch(user_id, batch_id)
+        await storage.set_mode(user_id, "ask")
+        await send_text(message, "🏁 Журнал закрыт. Это не подтверждение пищевой безопасности."
+                        if result else "Партия не найдена.", fermentation_keyboard())
+        return
+
+    if data.startswith("ferment:remove:"):
+        try:
+            batch_id = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            return
+        batch = await storage.fermentation_batch(user_id, batch_id)
+        if not batch:
+            return
+        await send_text(message, "Удалить партию «" + batch["name"] + "» вместе со всеми замерами?",
+                        keyboard([[("🗑 Да, удалить", f"ferment:confirmremove:{batch_id}")],
+                                  [("Отмена", f"fbat:{batch_id}")]]))
+        return
+
+    if data.startswith("ferment:confirmremove:"):
+        try:
+            batch_id = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            return
+        result = await storage.delete_fermentation_batch(user_id, batch_id)
+        await storage.set_mode(user_id, "ask")
+        await send_text(message, "🗑 Партия удалена." if result else "Партия не найдена.",
+                        fermentation_keyboard())
         return
 
     if data == "view:pantry":
