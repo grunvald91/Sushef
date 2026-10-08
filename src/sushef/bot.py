@@ -456,6 +456,9 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
     feedback = await storage.recent_feedback(user_id)
     if feedback:
         preferences["recent_cooking_feedback"] = feedback
+    patterns = await storage.feedback_patterns(user_id)
+    if patterns["repeated_issues"]:
+        preferences["feedback_patterns_not_confirmed_preferences"] = patterns
     memories = await storage.personal_memories(user_id, limit=10)
     if memories:
         preferences["confirmed_kitchen_memory"] = short_memory_context(memories)
