@@ -95,9 +95,21 @@ for attempt in $(seq 1 12); do
   fail "Container check failed. Database retained; manual inspection needed."
 done
 
+info "Checking live Telegram API and one minimal ClaudeHub response..."
+if ! dc exec -T bot python -m sushef.smoke; then
+  info "Live service check failed; private credentials are not logged."
+  if [ -n "$old_release" ] && [ -f "$old_release/compose.yaml" ]; then
+    info "Restoring previous bot code, keeping the database and its backup."
+    old_dc up -d --build bot || true
+  else
+    dc stop bot || true
+  fi
+  fail "Runtime smoke check failed. Inspect configuration privately on server."
+fi
+
 ln -sfn "$release" "$current"
 printf '%s\n' "$release_sha" > "$root/DEPLOYED_SHA"
 chmod 600 "$root/DEPLOYED_SHA"
 info "Deployed revision $release_sha to dedicated /opt/sushef."
-info "Container check passed; verify /start, /timers and ClaudeHub responses in Telegram."
+info "Container and live API probes passed; verify recipe generation and 1-minute /timers in Telegram."
 info "No other Docker project was modified. GitHub Actions not used."
