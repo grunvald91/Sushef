@@ -514,6 +514,33 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
     if memories:
         preferences["confirmed_kitchen_memory"] = short_memory_context(memories)
 
+    if mode == "timer:custom":
+        if not text.isdecimal() or not 1 <= int(text) <= MAX_MINUTES:
+            await send_text(
+                message,
+                f"Укажите целое число минут от 1 до {MAX_MINUTES} или /cancel."
+            )
+            return
+        cooking = await storage.current_cooking(user_id)
+        if cooking is None:
+            await storage.set_mode(user_id, "ask")
+            await send_text(message, "Приготовление уже завершено.", main_keyboard())
+            return
+        try:
+            timer = await storage.start_timer(
+                user_id, message.chat.id, int(text),
+                f"Шаг {cooking['step_index'] + 1}: "
+                + cooking["recipe"]["steps"][cooking["step_index"]][:95],
+            )
+        except ValueError as exc:
+            await send_text(message, "⏱ Не удалось запустить таймер: " + str(exc),
+                            cooking_keyboard())
+            return
+        await storage.set_mode(user_id, "cook")
+        await send_text(message, timer_start_text(timer["minutes"], timer["label"]),
+                        cooking_keyboard())
+        return
+
     if mode.startswith("pref:"):
         key = mode.split(":", 1)[1]
         if key not in PREF_LABELS:
@@ -866,6 +893,93 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         deleted = await storage.remove_memory(user_id, fact_id)
         await send_text(message, "🗑 Заметка удалена."
                         if deleted else "Заметка не найдена.", memory_kind_keyboard())
+        return
+
+    if data == "view:timers":
+        await show_timers(message, storage, user_id)
+        return
+
+    if data == "cook:show":
+        cooking = await storage.current_cooking(user_id)
+        if cooking:
+            await storage.set_mode(user_id, "cook")
+            await send_text(message, cooking_text(cooking), cooking_keyboard())
+        else:
+            await send_text(
+                message, "👨‍🍳 Пошаговая готовка не запущена. Выберите рецепт.",
+                main_keyboard()
+            )
+        return
+
+    if data == "cook:timer":
+        cooking = await storage.current_cooking(user_id)
+        if not cooking:
+            await send_text(message, "Сначала начните готовить пошагово.", main_keyboard())
+            return
+        await send_text(
+            message,
+            f"⏱ Шаг {cooking['step_index'] + 1}: выберите длительность таймера. "
+            "Можно оставить несколько таймеров на разных шагах. "
+            "Время само по себе не означает готовность или безопасность блюда.",
+            timer_choice_keyboard(cooking)
+        )
+        return
+
+    if data == "timer:custom":
+        cooking = await storage.current_cooking(user_id)
+        if not cooking:
+            await send_text(message, "Приготовление не запущено.", main_keyboard())
+            return
+        await storage.set_mode(user_id, "timer:custom")
+        await send_text(message, "⏱ На сколько минут поставить таймер? "
+                        f"Укажите число от 1 до {MAX_MINUTES}. Для отмены /cancel.")
+        return
+
+    if data.startswith("timer:start:"):
+        cooking = await storage.current_cooking(user_id)
+        if not cooking:
+            await send_text(message, "Сначала запустите пошаговую готовку.", main_keyboard())
+            return
+        selected = data.split(":", 2)[2]
+        hint = suggested_timer(cooking["recipe"], cooking["step_index"])
+        if selected == "hint":
+            if not hint:
+                await send_text(message, "Для этого шага нет рекомендованного таймера.",
+                                timer_choice_keyboard(cooking))
+                return
+            minutes, label = hint["minutes"], hint["label"]
+        else:
+            try:
+                minutes = int(selected)
+            except ValueError:
+                return
+            label = ("Шаг " + str(cooking["step_index"] + 1) + ": "
+                     + cooking["recipe"]["steps"][cooking["step_index"]][:95])
+        try:
+            timer = await storage.start_timer(user_id, message.chat.id, minutes, label)
+        except ValueError as exc:
+            await send_text(message, "⏱ Не удалось запустить таймер: " + str(exc),
+                            cooking_keyboard())
+            return
+        await storage.set_mode(user_id, "cook")
+        await send_text(message, timer_start_text(timer["minutes"], timer["label"]),
+                        cooking_keyboard())
+        return
+
+    if data.startswith("timer:cancel:"):
+        try:
+            timer_id = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            return
+        removed = await storage.cancel_timer(user_id, timer_id)
+        await send_text(
+            message,
+            "🛑 Таймер отменён." if removed
+            else "Этот таймер уже сработал, отменён или недоступен. "
+                 "Если уведомление уже отправляется, оно может прийти.",
+            keyboard([[("🔔 Мои таймеры", "view:timers"),
+                       ("👨‍🍳 Готовка", "cook:show")]]),
+        )
         return
 
     if data.startswith("mode:"):
