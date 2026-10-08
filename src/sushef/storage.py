@@ -532,6 +532,12 @@ class Storage:
         """
         now_ts = int(time()) if now_ts is None else now_ts
         async with self.sessions() as db:
+            # Exhausted leases must not remain eternally stuck in "sending".
+            await db.execute(update(CookingTimer).where(
+                CookingTimer.status == "sending",
+                CookingTimer.lease_until_ts <= now_ts,
+                CookingTimer.attempts >= 5,
+            ).values(status="failed", lease_until_ts=0))
             pending = (await db.scalars(
                 select(CookingTimer.id).where(
                     CookingTimer.due_at_ts <= now_ts,
@@ -567,6 +573,14 @@ class Storage:
                     claimed.append(self._timer_dict(row))
             await db.commit()
             return claimed
+
+    async def timer_still_sending(self, timer_id: int) -> bool:
+        """Avoid dispatching a timer cancelled after it was claimed."""
+        async with self.sessions() as db:
+            status = await db.scalar(
+                select(CookingTimer.status).where(CookingTimer.id == timer_id)
+            )
+            return status == "sending"
 
     async def complete_timer_delivery(self, timer_id: int, *, success: bool,
                                       now_ts: int | None = None) -> bool:
