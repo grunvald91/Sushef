@@ -788,7 +788,7 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
                 ". Рецепт сохранён автоматически в личном архиве."
             )
             await storage.set_mode(user_id, "ask")
-            await send_text(message, "Ваш рецепт уже в личном архиве! 🥘\n\n" +
+            await send_text(message, "🥘 Рецепт добавлен в Вашу личную коллекцию.\n\n" +
                             format_recipe(recipe), recipe_keyboard())
         elif mode == "plan":
             plan = await chef.weekly_plan(text, preferences, await storage.pantry(user_id))
