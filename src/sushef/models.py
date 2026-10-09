@@ -165,6 +165,25 @@ class CulinaryTechnique(Base):
     evidence: Mapped[str] = mapped_column(String(40), nullable=False)
 
 
+
+class DishProcessCard(Base):
+    """Quantified recipe plan linked to a separately sourced cuisine recipe."""
+    __tablename__ = "dish_process_cards"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    recipe_id: Mapped[str] = mapped_column(String(40), ForeignKey("cuisine_recipes.id"), index=True, nullable=False)
+    revision: Mapped[str] = mapped_column(String(20), nullable=False)
+    servings: Mapped[int] = mapped_column(Integer, nullable=False)
+    yield_grams: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    equipment: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    ingredients: Mapped[list[dict[str, str]]] = mapped_column(JSON, nullable=False)
+    stages: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    source_url: Mapped[str] = mapped_column(String(600), nullable=False)
+    source_publisher: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_note: Mapped[str] = mapped_column(Text, nullable=False)
+    technique_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    reviewed_on: Mapped[str] = mapped_column(String(10), nullable=False)
+
+
 class CookingTimer(Base):
     """Persistent Telegram timer. Background worker resumes after process restarts.
 
