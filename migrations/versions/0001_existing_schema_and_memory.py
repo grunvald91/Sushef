@@ -49,6 +49,7 @@ def upgrade() -> None:
     archive = sa.table(
         "recipe_archive", sa.column("user_id", sa.BigInteger),
         sa.column("recipe", sa.JSON), sa.column("origin", sa.String(32)),
+        sa.column("created_at", sa.DateTime(timezone=True)),
     )
     rows = conn.execute(
         sa.select(users.c.id, users.c.last_recipe).where(users.c.last_recipe.is_not(None))
@@ -56,7 +57,8 @@ def upgrade() -> None:
     for owner, recipe in rows:
         if isinstance(recipe, dict):
             conn.execute(archive.insert().values(
-                user_id=owner, recipe=recipe, origin="legacy_last"
+                user_id=owner, recipe=recipe, origin="legacy_last",
+                created_at=sa.func.now()
             ))
 
 

@@ -1,0 +1,14 @@
+{
+  "name": "Sushef — Python & SSH deployment",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance"
+      ]
+    }
+  },
+  "postCreateCommand": "git --version && python3 --version && ssh -V",
+  "remoteUser": "vscode"
+}

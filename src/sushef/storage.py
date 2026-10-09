@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from time import time
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from .models import Base, Conversation, CookingSession, Favorite, FermentationBatch, FermentationReading, PantryItem, PersonalMemory, RecipeArchive, RecipeFeedback, User, WeeklyPlan
+from .models import Base, Conversation, CookingSession, CookingTimer, Favorite, FermentationBatch, FermentationReading, PantryItem, PersonalMemory, RecipeArchive, RecipeFeedback, User, WeeklyPlan
+from .timers import MAX_ACTIVE_TIMERS, MAX_MINUTES, MIN_MINUTES
 from .memory import PROFILE_FIELDS, validate_memory, validate_preference
 
 
@@ -22,6 +25,22 @@ class Storage:
 
     async def close(self) -> None:
         await self.engine.dispose()
+
+    async def verify_schema_revision(self, required: str = "0002_timers") -> None:
+        """Fail closed when migrations were skipped or the DB is incompatible."""
+        try:
+            async with self.engine.connect() as conn:
+                current = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+        except SQLAlchemyError as exc:
+            raise RuntimeError(
+                "База не подготовлена. Перед запуском выполните alembic upgrade head."
+            ) from exc
+        if current != required:
+            raise RuntimeError(
+                f"Несовместимая схема базы: {current!r}. "
+                f"Требуется версия {required}. Выполните alembic upgrade head "
+                "после создания резервной копии."
+            )
 
     @staticmethod
     async def _user(db: AsyncSession, user_id: int) -> User:
@@ -61,6 +80,10 @@ class Storage:
             # больше не считаются подходящими для профиля.
             if key in {"allergens", "excluded"} and previous != prefs.get(key):
                 user.last_recipe = None
+                await db.execute(update(CookingTimer).where(
+                    CookingTimer.user_id == user_id,
+                    CookingTimer.status.in_(("active", "sending"))
+                ).values(status="cancelled"))
                 await db.execute(delete(CookingSession).where(CookingSession.user_id == user_id))
                 await db.execute(delete(WeeklyPlan).where(WeeklyPlan.user_id == user_id))
             await db.commit()
@@ -108,6 +131,12 @@ class Storage:
         async with self.sessions() as db:
             user = await self._user(db, user_id)
             user.last_recipe = recipe
+            await db.execute(delete(CookingSession).where(CookingSession.user_id == user_id))
+            # Previous timers belong to the old recipe; stop reminders for it.
+            await db.execute(update(CookingTimer).where(
+                CookingTimer.user_id == user_id,
+                CookingTimer.status.in_(("active", "sending"))
+            ).values(status="cancelled"))
             db.add(RecipeArchive(user_id=user_id, recipe=recipe, origin="generated"))
             await db.commit()
 
@@ -133,6 +162,11 @@ class Storage:
             if activate:
                 user = await self._user(db, user_id)
                 user.last_recipe = favorite.recipe
+                await db.execute(update(CookingTimer).where(
+                    CookingTimer.user_id == user_id,
+                    CookingTimer.status.in_(("active", "sending"))
+                ).values(status="cancelled"))
+                await db.execute(delete(CookingSession).where(CookingSession.user_id == user_id))
             await db.commit()
             return favorite.recipe
 
@@ -146,11 +180,16 @@ class Storage:
             if cooking is None:
                 cooking = CookingSession(user_id=user_id, recipe=recipe, step_index=0)
                 db.add(cooking)
-            else:
+            elif cooking.recipe != recipe:
                 cooking.recipe, cooking.step_index = recipe, 0
+                await db.execute(update(CookingTimer).where(
+                    CookingTimer.user_id == user_id,
+                    CookingTimer.status.in_(("active", "sending"))
+                ).values(status="cancelled"))
+            # Re-entering cooking for the SAME recipe resumes the last step.
             user.mode = "cook"
             await db.commit()
-            return {"recipe": recipe, "step_index": 0}
+            return {"recipe": recipe, "step_index": cooking.step_index}
 
     async def advance_cooking(self, user_id: int) -> dict[str, Any] | None:
         async with self.sessions() as db:
@@ -176,6 +215,10 @@ class Storage:
         async with self.sessions() as db:
             await db.execute(delete(Conversation).where(Conversation.user_id == user_id))
             await db.execute(delete(CookingSession).where(CookingSession.user_id == user_id))
+            await db.execute(update(CookingTimer).where(
+                CookingTimer.user_id == user_id,
+                CookingTimer.status.in_(("active", "sending"))
+            ).values(status="cancelled"))
             user = await self._user(db, user_id)
             user.mode = "ask"
             await db.commit()
@@ -184,6 +227,7 @@ class Storage:
         async with self.sessions() as db:
             await db.execute(delete(Conversation).where(Conversation.user_id == user_id))
             await db.execute(delete(CookingSession).where(CookingSession.user_id == user_id))
+            await db.execute(delete(CookingTimer).where(CookingTimer.user_id == user_id))
             await db.execute(delete(Favorite).where(Favorite.user_id == user_id))
             await db.execute(delete(PantryItem).where(PantryItem.user_id == user_id))
             await db.execute(delete(WeeklyPlan).where(WeeklyPlan.user_id == user_id))
@@ -430,6 +474,163 @@ class Storage:
             return True
 
 
+    async def start_timer(self, user_id: int, chat_id: int, minutes: int,
+                          label: str, now_ts: int | None = None) -> dict[str, Any]:
+        """Explicitly start a reminder for the current cooking step.
+
+        Multiple reminders can run while a user advances through steps.
+        Does not require or call an LLM, and is bounded per account.
+        """
+        if type(minutes) is not int or not MIN_MINUTES <= minutes <= MAX_MINUTES:
+            raise ValueError(f"Таймер должен длиться {MIN_MINUTES}–{MAX_MINUTES} минут")
+        if chat_id != user_id:
+            raise ValueError("Таймер можно запускать только в личном чате")
+        if not label.strip() or len(label.strip()) > 120:
+            raise ValueError("Неверная подпись таймера")
+        now_ts = int(time()) if now_ts is None else now_ts
+        async with self.sessions() as db:
+            cooking = await db.get(CookingSession, user_id)
+            if cooking is None or cooking.step_index >= len(cooking.recipe.get("steps", [])):
+                raise ValueError("Для запуска таймера начните пошаговое приготовление")
+            # PostgreSQL row lock serializes simultaneous taps from the same
+            # user, so both the idempotency check and timer cap are respected.
+            await db.execute(select(User.id).where(
+                User.id == user_id
+            ).with_for_update())
+            current = (await db.scalars(select(CookingTimer).where(
+                CookingTimer.user_id == user_id,
+                CookingTimer.status.in_(("active", "sending")),
+            ))).all()
+            duplicate = next((
+                t for t in current
+                if t.step_index == cooking.step_index and t.minutes == minutes
+                and t.label == label.strip()
+                and t.recipe_title == str(cooking.recipe.get("title", "Блюдо"))[:180]
+            ), None)
+            if duplicate is not None:
+                return self._timer_dict(duplicate)
+            if len(current) >= MAX_ACTIVE_TIMERS:
+                raise ValueError(f"Одновременно разрешено не больше {MAX_ACTIVE_TIMERS} таймеров")
+            record = CookingTimer(
+                user_id=user_id, chat_id=chat_id,
+                recipe_title=str(cooking.recipe.get("title", "Блюдо"))[:180],
+                step_index=cooking.step_index, label=label.strip(),
+                minutes=minutes, due_at_ts=now_ts + minutes * 60,
+                retry_at_ts=0, lease_until_ts=0, attempts=0, status="active",
+            )
+            db.add(record)
+            await db.commit()
+            return self._timer_dict(record)
+
+    @staticmethod
+    def _timer_dict(row: CookingTimer) -> dict[str, Any]:
+        return {
+            "id": row.id, "user_id": row.user_id, "chat_id": row.chat_id,
+            "recipe_title": row.recipe_title, "step_index": row.step_index,
+            "label": row.label, "minutes": row.minutes,
+            "due_at_ts": row.due_at_ts, "status": row.status,
+            "attempts": row.attempts,
+        }
+
+    async def user_timers(self, user_id: int) -> list[dict[str, Any]]:
+        async with self.sessions() as db:
+            rows = (await db.scalars(
+                select(CookingTimer).where(
+                    CookingTimer.user_id == user_id,
+                    CookingTimer.status.in_(("active", "sending")),
+                ).order_by(CookingTimer.due_at_ts, CookingTimer.id)
+            )).all()
+            return [self._timer_dict(row) for row in rows]
+
+    async def cancel_timer(self, user_id: int, timer_id: int) -> bool:
+        async with self.sessions() as db:
+            changed = await db.execute(
+                update(CookingTimer)
+                .where(CookingTimer.id == timer_id,
+                       CookingTimer.user_id == user_id,
+                       CookingTimer.status.in_(("active", "sending")))
+                .values(status="cancelled", lease_until_ts=0)
+            )
+            await db.commit()
+            return changed.rowcount == 1
+
+    async def claim_due_timers(self, *, now_ts: int | None = None,
+                               limit: int = 20) -> list[dict[str, Any]]:
+        """Transactional CAS claim of due rows, incl. expired send leases.
+
+        A claim is persisted BEFORE Telegram send. An unexpected process crash
+        after Telegram accepts the message may cause a duplicate on recovery.
+        """
+        now_ts = int(time()) if now_ts is None else now_ts
+        async with self.sessions() as db:
+            # Exhausted leases must not remain eternally stuck in "sending".
+            await db.execute(update(CookingTimer).where(
+                CookingTimer.status == "sending",
+                CookingTimer.lease_until_ts <= now_ts,
+                CookingTimer.attempts >= 5,
+            ).values(status="failed", lease_until_ts=0))
+            pending = (await db.scalars(
+                select(CookingTimer.id).where(
+                    CookingTimer.due_at_ts <= now_ts,
+                    CookingTimer.attempts < 5,
+                    (
+                        ((CookingTimer.status == "active") &
+                         (CookingTimer.retry_at_ts <= now_ts))
+                        | ((CookingTimer.status == "sending") &
+                           (CookingTimer.lease_until_ts <= now_ts))
+                    ),
+                ).order_by(CookingTimer.due_at_ts, CookingTimer.id)
+                .limit(max(1, min(limit, 100)))
+            )).all()
+            claimed = []
+            for timer_id in pending:
+                result = await db.execute(
+                    update(CookingTimer).where(
+                        CookingTimer.id == timer_id,
+                        CookingTimer.due_at_ts <= now_ts,
+                        CookingTimer.attempts < 5,
+                        (
+                            ((CookingTimer.status == "active") &
+                             (CookingTimer.retry_at_ts <= now_ts))
+                            | ((CookingTimer.status == "sending") &
+                               (CookingTimer.lease_until_ts <= now_ts))
+                        ),
+                    ).values(status="sending",
+                             lease_until_ts=now_ts + 120,
+                             attempts=CookingTimer.attempts + 1)
+                )
+                if result.rowcount == 1:
+                    row = await db.get(CookingTimer, timer_id)
+                    claimed.append(self._timer_dict(row))
+            await db.commit()
+            return claimed
+
+    async def timer_still_sending(self, timer_id: int) -> bool:
+        """Avoid dispatching a timer cancelled after it was claimed."""
+        async with self.sessions() as db:
+            status = await db.scalar(
+                select(CookingTimer.status).where(CookingTimer.id == timer_id)
+            )
+            return status == "sending"
+
+    async def complete_timer_delivery(self, timer_id: int, *, success: bool,
+                                      now_ts: int | None = None) -> bool:
+        """Mark sent, or retry with backoff; never retry a cancelled timer."""
+        now_ts = int(time()) if now_ts is None else now_ts
+        async with self.sessions() as db:
+            row = await db.get(CookingTimer, timer_id)
+            if not row or row.status != "sending":
+                return False
+            if success:
+                row.status = "delivered"
+                row.lease_until_ts = 0
+            else:
+                row.status = "failed" if row.attempts >= 5 else "active"
+                row.lease_until_ts = 0
+                row.retry_at_ts = now_ts + min(60 * (2 ** max(0, row.attempts - 1)), 900)
+            await db.commit()
+            return True
+
     async def archived_recipes(self, user_id: int, limit: int = 15, offset: int = 0) -> list[dict[str, Any]]:
         """Рецепты сохраняются автоматически; избранное — отдельная коллекция."""
         async with self.sessions() as db:
@@ -455,6 +656,11 @@ class Storage:
                 if prefs.get("allergens") or prefs.get("excluded"):
                     return None
                 user.last_recipe = row.recipe
+                await db.execute(update(CookingTimer).where(
+                    CookingTimer.user_id == user_id,
+                    CookingTimer.status.in_(("active", "sending"))
+                ).values(status="cancelled"))
+                await db.execute(delete(CookingSession).where(CookingSession.user_id == user_id))
             await db.commit()
             return row.recipe
 
@@ -540,6 +746,7 @@ class Storage:
             notes = await rows_for(PersonalMemory)
             batches = await rows_for(FermentationBatch)
             readings = await rows_for(FermentationReading)
+            timers = await rows_for(CookingTimer)
             cooking = await db.get(CookingSession, user_id)
             weekly = await db.get(WeeklyPlan, user_id)
             return {
@@ -568,6 +775,10 @@ class Storage:
                      "protocol_id": b.protocol_id, "protocol_revision": b.protocol_revision,
                      "protocol_source": b.protocol_source, "finished": b.finished,
                      "started_at": str(b.started_at)} for b in batches
+                ],
+                "cooking_timers": [
+                    {**self._timer_dict(t), "created_at": str(t.created_at)}
+                    for t in timers
                 ],
                 "fermentation_readings": [
                     {"batch_id": r.batch_id, "temperature_c": r.temperature_c,

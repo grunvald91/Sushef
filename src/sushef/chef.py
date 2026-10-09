@@ -9,6 +9,7 @@ from anthropic import AsyncAnthropic
 from .config import Settings
 from .prompts import RECIPE_JSON, build_system
 from .weekly import WEEKLY_JSON, normalize_weekly_plan
+from .timers import normalize_step_timers, suggested_timer
 
 
 class RecipeFormatError(ValueError):
@@ -51,6 +52,7 @@ def normalize_recipe(text: str) -> dict[str, Any]:
         "title": title.strip(), "time_minutes": minutes, "servings": servings,
         "ingredients": clean_ingredients,
         "steps": [s[:1200] for s in steps],
+        "step_timers": normalize_step_timers(data.get("step_timers"), len(steps)),
         "safety_notes": [n[:400] for n in notes[:5]],
     }
 
@@ -59,7 +61,14 @@ def format_recipe(recipe: dict[str, Any]) -> str:
     lines = [f"🍽 {recipe['title']}", f"⏱ {recipe['time_minutes']} мин • 👥 {recipe['servings']} порц.", "", "Продукты:"]
     lines.extend(f"• {item['name']} — {item['amount']}" for item in recipe["ingredients"])
     lines.append("\nКак готовить:")
-    lines.extend(f"{i}. {step}" for i, step in enumerate(recipe["steps"], 1))
+    for i, step in enumerate(recipe["steps"], 1):
+        hint = suggested_timer(recipe, i - 1)
+        lines.append(f"{i}. {step}")
+        if hint:
+            lines.append(f"   ⏱ Можно поставить таймер на {hint['minutes']} мин: {hint['label']}.")
+    if recipe.get("step_timers"):
+        lines.append("\n⏱ Таймер запускается только по нажатию в режиме «Готовим пошагово»."
+                     " Срабатывание не подтверждает безопасность пищи.")
     if recipe["safety_notes"]:
         lines.extend(["\nБезопасность:"] + [f"• {n}" for n in recipe["safety_notes"]])
     return "\n".join(lines)
