@@ -259,7 +259,7 @@ def production_quality_text(row: dict) -> str:
         "", "Подача: " + spec["service"],
         "Обращение и хранение: " + spec["handling"],
         "Срок хранения: не валидирован для конкретной рецептуры.",
-        "", "Изменения рецептуры:",
+        "", "Замены и их последствия:",
     ]
     for change in spec["substitutions"]:
         lines.append("• " + change["original"] + " → " + change["alternative"] +
