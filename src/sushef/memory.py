@@ -26,7 +26,12 @@ MEMORY_KINDS = {
     "technique": "Приёмы и навыки",
     "habit": "Кухонные привычки",
     "recipe_tip": "Моя доработка блюда",
+    "dish_story": "Истории приготовлений",
+    "discovery": "Кулинарные открытия",
 }
+
+COMMUNICATION_FIELDS = {"display_name", "address_form", "conversation_style",
+                        "style_notes", "onboarding_skipped"}
 
 CHOICES = {
     "spice": {"без острого", "лёгкая", "средняя", "острая"},
@@ -35,13 +40,30 @@ CHOICES = {
 
 
 def validate_preference(key: str, value: str) -> str:
-    if key not in PROFILE_FIELDS:
+    if key not in PROFILE_FIELDS and key not in COMMUNICATION_FIELDS:
         raise ValueError("Неизвестный параметр профиля")
     cleaned = value.strip()
     if cleaned == "-":
         return cleaned
     if not cleaned or len(cleaned) > 500:
         raise ValueError("Значение должно содержать от 1 до 500 символов")
+    if re.search(r"[\\x00-\\x1f\\x7f]", cleaned):
+        raise ValueError("Недопустимые управляющие символы")
+    if key == "display_name" and len(cleaned) > 60:
+        raise ValueError("Обращение должно быть не длиннее 60 символов")
+    if key == "style_notes" and len(cleaned) > 200:
+        raise ValueError("Пожелания о стиле — не более 200 символов")
+    if key == "address_form":
+        cleaned = cleaned.casefold()
+        if cleaned not in {"ты", "вы"}:
+            raise ValueError("Выберите обращение на «ты» или на «вы»")
+    if key == "conversation_style":
+        from .personalization import STYLE_PROMPTS
+        cleaned = cleaned.casefold()
+        if cleaned not in STYLE_PROMPTS:
+            raise ValueError("Неизвестный стиль общения")
+    if key == "onboarding_skipped" and cleaned != "yes":
+        raise ValueError("Некорректная настройка знакомства")
     if key == "portions" and (not cleaned.isdigit() or not 1 <= int(cleaned) <= 50):
         raise ValueError("Порции: целое число от 1 до 50")
     if key == "cook_time" and (not cleaned.isdigit() or not 5 <= int(cleaned) <= 720):
