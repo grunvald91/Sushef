@@ -14,6 +14,7 @@ from .timers import MAX_ACTIVE_TIMERS, MAX_MINUTES, MIN_MINUTES
 from .cuisine_catalog import CUISINES, RECIPES, as_row, validate_seed
 from .technique_catalog import TECHNIQUES, CATEGORIES, SEARCH_TRIGGERS, as_row as technique_as_row, validate_techniques
 from .dish_process_cards import DISH_CARDS, as_row as dish_as_row, validate_dish_cards
+from .dish_process_cards_v2 import V2_DISH_CARDS, as_row_v2, validate_v2_cards
 from .memory import PROFILE_FIELDS, validate_memory, validate_preference
 
 
@@ -167,12 +168,17 @@ class Storage:
 
     async def seed_dish_cards(self) -> int:
         validate_dish_cards()
+        validate_v2_cards()
         added = 0
         async with self.sessions() as db:
             existing = set((await db.scalars(select(DishProcessCard.id))).all())
             for row in DISH_CARDS:
                 if row["id"] not in existing:
                     db.add(DishProcessCard(**dish_as_row(row)))
+                    added += 1
+            for row in V2_DISH_CARDS:
+                if row["id"] not in existing:
+                    db.add(DishProcessCard(**as_row_v2(row)))
                     added += 1
             await db.commit()
         return added
@@ -199,12 +205,13 @@ class Storage:
                 "source_note": row.source_note,
                 "technique_ids": list(row.technique_ids),
                 "reviewed_on": row.reviewed_on,
+                "production_spec": row.production_spec,
             }
 
     async def close(self) -> None:
         await self.engine.dispose()
 
-    async def verify_schema_revision(self, required: str = "0004_techniques") -> None:
+    async def verify_schema_revision(self, required: str = "0005_prod_cards") -> None:
         """Fail closed when migrations were skipped or the DB is incompatible."""
         try:
             async with self.engine.connect() as conn:
