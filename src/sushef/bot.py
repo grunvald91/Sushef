@@ -894,7 +894,22 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
                     query += ("\n\nДля кулинарной ориентации доступны СПРАВОЧНЫЕ карточки "
                               "(они не обязаны подходить запросу и не заменяют ограничения):\n" +
                               "\n\n".join(source_reference(r) for r in references))
+            matching_techniques = await storage.technique_matches(
+                text + ((" " + reference["title"] + " " + reference["method"])
+                        if reference else ""), limit=2
+            )
+            if matching_techniques:
+                query += ("\n\nТехнологические справки (объясняют принципы, "
+                          "но не подтверждают весь новый рецепт):\n" +
+                          technique_context(matching_techniques))
             recipe = await chef.recipe(query, preferences)
+            if matching_techniques:
+                top = matching_techniques[0]
+                recipe["technique_reference"] = {
+                    "id": top["id"], "title": top["title"],
+                    "revision": top["revision"],
+                    "source_url": top["source_url"],
+                }
             if reference:
                 recipe["catalog_reference"] = {
                     "id": reference["id"], "title": reference["title"],
@@ -955,7 +970,18 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
                 else:
                     await storage.set_mode(user_id, "ask")
                     mode = "ask"
-            answer = await chef.answer(mode, text, preferences, history, context)
+            ai_text = text
+            if mode.startswith("technique:"):
+                item = await storage.technique_card(mode.split(":", 1)[1])
+                await storage.set_mode(user_id, "ask")
+                mode = "ask"
+                if item:
+                    ai_text += "\n\nСправка для ответа:\n" + technique_context([item])
+            elif mode in {"ask", "rescue"}:
+                related = await storage.technique_matches(text, limit=2)
+                if related:
+                    ai_text += "\n\nТехнологические справки:\n" + technique_context(related)
+            answer = await chef.answer(mode, ai_text, preferences, history, context)
             await storage.add_exchange(user_id, text, answer)
             await send_text(message, answer,
                             cooking_keyboard() if mode == "cook" else
