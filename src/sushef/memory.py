@@ -47,7 +47,7 @@ def validate_preference(key: str, value: str) -> str:
         return cleaned
     if not cleaned or len(cleaned) > 500:
         raise ValueError("Значение должно содержать от 1 до 500 символов")
-    if re.search(r"[\\x00-\\x1f\\x7f]", cleaned):
+    if re.search(r"[\x00-\x1f\x7f]", cleaned):
         raise ValueError("Недопустимые управляющие символы")
     if key == "display_name" and len(cleaned) > 60:
         raise ValueError("Обращение должно быть не длиннее 60 символов")
