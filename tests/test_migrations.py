@@ -91,7 +91,7 @@ def test_repeated_migration_keeps_edited_cuisine_entry_and_existing_users(tmp_pa
     con.execute("UPDATE cuisine_recipes SET method=? WHERE id='gazpacho'",
                 ("Редакторская правка",))
     con.execute("INSERT INTO users(id,mode,preferences,last_recipe,usage_day,usage_count) "
-                "VALUES(31,'ask','{\\\"likes\\\":\\\"суп\\\"}',NULL,'',0)")
+                "VALUES(31,'ask',?,NULL,'',0)", (json.dumps({"likes": "суп"}, ensure_ascii=False),))
     con.commit()
     con.close()
     upgrade(path)
