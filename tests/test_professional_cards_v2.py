@@ -67,7 +67,7 @@ def test_v2_quality_and_navigation_are_honest_and_easy_to_read():
     assert "Почему это работает:" in step
     assert "Контрольный признак:" in step
     assert "Если не получилось:" in step
-    assert "не задаёт численный режим" in step
+    assert "не заданы для этого этапа" in step
     with pytest.raises(ValueError):
         production_stage_text(row, 20)
     quality = production_quality_text(row)
