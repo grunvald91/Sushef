@@ -92,7 +92,7 @@ def test_gender_neutral_informal_and_no_context_no_invention():
     result = correct_egg_followup(
         "Зачем тут яйца?", history, {"address_form": "ты"}
     )
-    assert result and "ты их не называл" in result
+    assert result and "не были перечислены среди твоих продуктов" in result
     assert correct_egg_followup("При чём здесь яйца?", [], {}) is None
     assert correct_egg_followup(
         "При чём здесь яйца?",
