@@ -179,6 +179,7 @@ class Chef:
         output = await self._request(
             build_system("recipe", preferences) + "\n\n" + RECIPE_JSON,
             [{"role": "user", "content": text}],
+            max_tokens=min(max(self.max_tokens, 2600), 3500),
         )
         return normalize_recipe(output)
 
