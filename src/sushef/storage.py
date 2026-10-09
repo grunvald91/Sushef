@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from .models import Base, CuisineRecipe, CulinaryTechnique, DishProcessCard, Conversation, CookingSession, CookingTimer, Favorite, FermentationBatch, FermentationReading, PantryItem, PersonalMemory, RecipeArchive, RecipeFeedback, User, WeeklyPlan
 from .timers import MAX_ACTIVE_TIMERS, MAX_MINUTES, MIN_MINUTES
 from .cuisine_catalog import CUISINES, RECIPES, as_row, validate_seed
-from .technique_catalog import TECHNIQUES, CATEGORIES, as_row as technique_as_row, validate_techniques
+from .technique_catalog import TECHNIQUES, CATEGORIES, SEARCH_TRIGGERS, as_row as technique_as_row, validate_techniques
 from .dish_process_cards import DISH_CARDS, as_row as dish_as_row, validate_dish_cards
 from .memory import PROFILE_FIELDS, validate_memory, validate_preference
 
@@ -145,28 +145,25 @@ class Storage:
             return self._technique_data(row) if row else None
 
     async def technique_matches(self, query: str, *, limit: int = 2) -> list[dict[str, Any]]:
-        """Small editorial search; no generated proof of safety."""
+        """Conservative lexical grounding: no source injected on generic words."""
         import re
-        words = [w for w in re.findall(r"[а-яёa-z]+", query.casefold()) if len(w) >= 4]
+        words = [w for w in re.findall(r"[а-яёa-z]+", query.casefold())
+                 if len(w) >= 4]
         if not words:
             return []
         async with self.sessions() as db:
             rows = (await db.scalars(select(CulinaryTechnique))).all()
         ranked = []
         for row in rows:
-            score = sum(
-                3 if any(word.startswith(tag) for tag in row.tags)
-                else 0 for word in words
-            )
-            # Technique titles offer stronger evidence of a relevant query.
-            title_words = re.findall(r"[а-яёa-z]+", row.title.casefold())
-            score += sum(4 for word in words if any(
-                word[:5] == title_word[:5] for title_word in title_words
-                if len(title_word) >= 5))
-            if score:
-                ranked.append((score, row.id, row))
+            triggers = SEARCH_TRIGGERS.get(row.id, ())
+            hits = sum(1 for trigger in triggers if any(
+                word.startswith(trigger) for word in words
+            ))
+            if hits:
+                ranked.append((hits, row.id, row))
         ranked.sort(key=lambda x: (-x[0], x[1]))
         return [self._technique_data(row) for _, _, row in ranked[:max(1, min(limit, 3))]]
+
 
     async def seed_dish_cards(self) -> int:
         validate_dish_cards()
