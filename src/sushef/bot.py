@@ -1084,6 +1084,59 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         await send_text(message, communication_summary(prefs), communication_keyboard())
         return
 
+    if data == "view:techniques":
+        await send_text(
+            message,
+            "🧪 Здесь не просто рецепты — секреты, которые делают вкус выразительным. "
+            "Выберите процесс, и я покажу, почему он работает, как его контролировать "
+            "и как спасти результат, если что-то пошло не так.",
+            technique_categories_keyboard(),
+        )
+        return
+
+    if data.startswith("technique:category:"):
+        category = data.rsplit(":", 1)[1]
+        if category not in CATEGORIES:
+            return
+        items = await storage.technique_cards(category)
+        rows = [[(entry["title"][:52], "technique:open:" + entry["id"])] for entry in items]
+        rows.append([("🧪 Все технологии", "view:techniques")])
+        await send_text(message, CATEGORIES[category] + "\nВыберите технологическую карту:", keyboard(rows))
+        return
+
+    if data.startswith("technique:open:"):
+        tid = data.rsplit(":", 1)[1]
+        item = await storage.technique_card(tid)
+        if not item:
+            await send_text(message, "Технологическая карта не найдена.", technique_categories_keyboard())
+            return
+        await send_text(
+            message, technique_card_text(item),
+            keyboard([[("💬 Спросить о технике", "technique:ask:" + tid)],
+                      [("↩️ К этой категории", "technique:category:" + item["category"])],
+                      [("🏠 Меню", "view:main")]]),
+        )
+        return
+
+    if data.startswith("technique:ask:"):
+        tid = data.rsplit(":", 1)[1]
+        item = await storage.technique_card(tid)
+        if item is None:
+            return
+        await storage.set_mode(user_id, "technique:" + tid)
+        await send_text(message, "С удовольствием разберём тонкости «" + item["title"] +
+                        "». Что именно хочется понять или попробовать?")
+        return
+
+    if data in {"cook:why", "cook:fix"}:
+        session = await storage.current_cooking(user_id)
+        if not session:
+            await send_text(message, "Сначала выберите блюдо и запустите готовку.", main_keyboard())
+            return
+        await send_text(message, cooking_insight_text(
+            session, "why" if data == "cook:why" else "fix"), cooking_keyboard())
+        return
+
     if data == "view:cuisines":
         await send_text(
             message,
