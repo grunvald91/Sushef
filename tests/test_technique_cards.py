@@ -49,6 +49,29 @@ def test_techniques_reject_invalid_sources_and_duplicate_ids(monkeypatch):
         catalog.validate_techniques()
 
 
+
+def test_professional_editorial_fixes_are_covered():
+    cards = {item["id"]: item for item in TECHNIQUES}
+    caramel = cards["caramel"]
+    assert any("сухой карамели" in step for step in caramel["controls"])
+    assert any("влажной карамели" in step for step in caramel["controls"])
+    assert any("кристалл" in issue["symptom"] for issue in caramel["problems"])
+    emulsion = cards["emulsion"]
+    assert any("майонез" in issue["symptom"].casefold() for issue in emulsion["problems"])
+    assert any("голландез" in issue["symptom"].casefold() for issue in emulsion["problems"])
+    assert "hollandaise-pop.html" in emulsion["source_url"]
+    pastry = cards["pastry-fat"]
+    assert any("пластичным" in tip for tip in pastry["controls"])
+    assert any("ломается" in issue["symptom"] for issue in pastry["problems"])
+    maillard = cards["maillard"]
+    assert "температуре" in maillard["limits"]
+    spanish = {item["recipe_id"]: item for item in DISH_CARDS}
+    gazpacho = spanish["gazpacho"]
+    assert any("кипячёная" in x["name"] for x in gazpacho["ingredients"])
+    assert all(x["temperature"] is None for x in gazpacho["stages"])
+
+
+
 def test_dish_cards_have_quantities_and_dont_invent_yields():
     validate_dish_cards()
     assert {c["recipe_id"] for c in DISH_CARDS} == {"gazpacho", "salmorejo"}
