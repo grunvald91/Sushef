@@ -98,6 +98,20 @@ TECHNIQUES = [
          source_url="https://www.kingarthurbaking.com/blog/2020/08/31/why-does-butter-temperature-matter-in-pastry"),
 ]
 
+# Minimal high-signal vocabulary for grounding free-form requests.
+# General words (например, "масло" или "еда") alone must not trigger
+# a specialized scientific explanation about a different technique.
+SEARCH_TRIGGERS = {
+    "maillard": ("короч", "подрумян", "зажарк", "обжарк", "румян", "майяр"),
+    "brown-butter": ("орехов", "нуазет", "бурнуазет"),
+    "gentle-eggs": ("омлет", "скрэмбл", "глазун", "коагуляц", "резинов"),
+    "gluten": ("клейков", "замес", "вымеш", "эластич"),
+    "dough-folds": ("складыван", "складк", "подтяжк"),
+    "emulsion": ("эмульс", "рассло", "майонез", "голландез"),
+    "caramel": ("карамел", "карамелиз", "жжёный"),
+    "pastry-fat": ("слоён", "слоен", "круассан", "песочн"),
+}
+
 CATEGORIES = {
     "heat": "🔥 Нагрев и аромат",
     "fat": "🧈 Работа с жиром",
