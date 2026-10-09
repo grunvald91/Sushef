@@ -121,6 +121,26 @@ class PersonalMemory(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+
+class CuisineRecipe(Base):
+    """Shared editorial catalog, not owned by or inferred from a user."""
+    __tablename__ = "cuisine_recipes"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    cuisine: Mapped[str] = mapped_column(String(40), index=True, nullable=False)
+    cuisine_label: Mapped[str] = mapped_column(String(80), nullable=False)
+    region: Mapped[str] = mapped_column(String(100), nullable=False)
+    title: Mapped[str] = mapped_column(String(180), nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    servings: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ingredients: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    method: Mapped[str] = mapped_column(Text, nullable=False)
+    publisher: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_url: Mapped[str] = mapped_column(String(600), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    reviewed_on: Mapped[str] = mapped_column(String(10), nullable=False)
+    tags: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
 class CookingTimer(Base):
     """Persistent Telegram timer. Background worker resumes after process restarts.
 

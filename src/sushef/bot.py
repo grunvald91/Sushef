@@ -20,6 +20,7 @@ from .protocols import assess_process, get_protocol, list_protocols, protocol_co
 from .science_library import get_knowledge, knowledge_context, knowledge_text, list_knowledge
 from .pantry import format_quantity, format_shopping_comparison, parse_product_line
 from .weekly import DAY_NAMES, MEAL_NAMES, WeeklyPlanError, format_day, format_full_week
+from .cuisine_catalog import CUISINES, CUISINE_GROUPS
 from .config import Settings
 from .storage import Storage
 
@@ -53,6 +54,7 @@ def main_keyboard() -> InlineKeyboardMarkup:
         [("📖 История рецептов", "view:archive"), ("🧠 Моя память", "view:memory")],
         [("📦 Мои продукты", "view:pantry"), ("📆 Моё меню", "view:week")],
         [("🥗 Мой профиль", "view:profile"), ("💬 Спросить шефа", "mode:ask")],
+        [("🌍 Кухни мира и первоисточники", "view:cuisines")],
         [("🔬 Микробиология и ферментация", "view:ferment")],
     ])
 
@@ -86,6 +88,56 @@ def communication_keyboard() -> InlineKeyboardMarkup:
         [("🎭 Выбрать стиль с примерами", "hello:styles")],
         [("🥗 Мой профиль", "view:profile"), ("🏠 Меню", "view:main")],
     ])
+
+
+def cuisines_keyboard() -> InlineKeyboardMarkup:
+    buttons = [[(label, "cuisine:group:" + group)]
+               for group, (label, _) in CUISINE_GROUPS.items()]
+    buttons.extend([[("🌐 Все 12 национальных кухонь", "cuisine:group:all")],
+                    [("🏠 Главное меню", "view:main")]])
+    return keyboard(buttons)
+
+
+def cuisines_group_keyboard(group: str) -> InlineKeyboardMarkup:
+    if group == "all":
+        keys = tuple(CUISINES)
+    else:
+        group_entry = CUISINE_GROUPS.get(group)
+        keys = group_entry[1] if group_entry else ()
+    rows = [[(CUISINES[key][0], "cuisine:list:" + key)] for key in keys]
+    rows.append([("🌍 К группам кухонь", "view:cuisines")])
+    return keyboard(rows)
+
+
+def cuisine_recipe_text(row: dict) -> str:
+    level = ("📐 В источнике есть пропорции" if row["kind"] == "quantified"
+             else "📝 Описание традиции без полной количественной раскладки")
+    amount = f" · {row['servings']} порций" if row.get("servings") else ""
+    ingredients = "\n".join("• " + i for i in row["ingredients"])
+    return (f"🌍 {row['title']} — {row['cuisine_label']} ({row['region']})\n"
+            f"{level}{amount}\n\n"
+            f"Продукты:\n{ingredients}\n\n"
+            f"Технологическая идея:\n{row['method']}\n\n"
+            f"Источник: {row['publisher']}\n{row['source_url']}\n"
+            f"Сверено: {row['reviewed_on']}\n\n"
+            "Если мы изменим состав или пропорции, это будет наша адаптация, а не оригинал источника.")
+
+
+def source_reference(row: dict) -> str:
+    """Compact source grounding without misrepresenting the author's published text."""
+    measure_note = ("Пропорции приведены в первоисточнике."
+                    if row["kind"] == "quantified"
+                    else "Источник не приводит полную количественную рецептуру: числа нужно подбирать отдельно.")
+    return (
+        f"Подтверждённая справочная карточка: {row['title']} ({row['region']}).\n"
+        f"Продукты из источника: {', '.join(row['ingredients'])}.\n"
+        f"Краткое независимое изложение принципа: {row['method']}\n"
+        f"{measure_note}\n"
+        f"Первоначальный источник: {row['publisher']} — {row['source_url']}\n"
+        "Не называй свои изменения аутентичным рецептом источника. "
+        "Если возможны замены, объясни, что это адаптация. "
+        "Не считай блюдо безопасным для аллергика без отдельной проверки."
+    )
 
 
 def recipe_keyboard() -> InlineKeyboardMarkup:
@@ -762,8 +814,21 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
 
     try:
         await message.bot.send_chat_action(message.chat.id, "typing")
-        if mode in {"recipe", "pantry_recipe"} or mode.startswith("weekly:"):
-            if mode == "pantry_recipe":
+        if mode in {"recipe", "pantry_recipe"} or mode.startswith(("weekly:", "catalog:")):
+            reference = None
+            if mode.startswith("catalog:"):
+                reference = await storage.cuisine_recipe(mode.split(":", 1)[1])
+                if not reference:
+                    await storage.set_mode(user_id, "ask")
+                    await send_text(message, "Эта карточка больше недоступна. Выберем другую?", cuisines_keyboard())
+                    return
+                query = (
+                    "Создай удобную домашнюю адаптацию следующего блюда. "
+                    "Не называй адаптированные количества каноническим оригиналом.\n"
+                    + source_reference(reference) + "\n"
+                    + "Доступные продукты и пожелания пользователя: " + text
+                )
+            elif mode == "pantry_recipe":
                 rows = await storage.pantry(user_id)
                 products = ", ".join(
                     f"{r['display_name']}: {r['quantity']} {r['unit']}" for r in rows)
@@ -780,8 +845,19 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
                 selected = plan["days"][int(day_raw)][meal]
                 query = f"Полный подробный рецепт для блюда «{selected}». Пожелания пользователя: {text}"
             else:
+                references = await storage.cuisine_matches(text, limit=2)
                 query = text
+                if references:
+                    query += ("\n\nДля кулинарной ориентации доступны СПРАВОЧНЫЕ карточки "
+                              "(они не обязаны подходить запросу и не заменяют ограничения):\n" +
+                              "\n\n".join(source_reference(r) for r in references))
             recipe = await chef.recipe(query, preferences)
+            if reference:
+                recipe["catalog_reference"] = {
+                    "id": reference["id"], "title": reference["title"],
+                    "source_url": reference["source_url"],
+                    "publisher": reference["publisher"], "adapted": True,
+                }
             await storage.set_recipe(user_id, recipe)
             await storage.add_exchange(
                 user_id, text, "Создан рецепт: " + recipe["title"] +
@@ -963,6 +1039,68 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
     if data == "view:communication":
         prefs = (await storage.get_user(user_id))["preferences"]
         await send_text(message, communication_summary(prefs), communication_keyboard())
+        return
+
+    if data == "view:cuisines":
+        await send_text(
+            message,
+            "🌍 Приглашаю Вас в маленькое гастрономическое путешествие! "
+            "Здесь собраны блюда из опубликованных кулинарных источников. "
+            "У каждой карточки есть ссылка и пометка о наличии точных пропорций. "
+            "Какую кухню исследуем?",
+            cuisines_keyboard(),
+        )
+        return
+
+    if data.startswith("cuisine:group:"):
+        group = data.rsplit(":", 1)[1]
+        if group != "all" and group not in CUISINE_GROUPS:
+            return
+        label = "🌐 Все кухни" if group == "all" else CUISINE_GROUPS[group][0]
+        await send_text(message, label + "\n\nВыберем направление, которое сегодня вдохновляет?",
+                        cuisines_group_keyboard(group))
+        return
+
+    if data.startswith("cuisine:list:"):
+        cuisine = data.rsplit(":", 1)[1]
+        if cuisine not in CUISINES:
+            return
+        entries = await storage.cuisine_recipes(cuisine)
+        rows = [[(r["title"][:55], "cuisine:open:" + r["id"])] for r in entries]
+        rows.append([("🌍 Другие кухни", "view:cuisines")])
+        await send_text(
+            message, CUISINES[cuisine][0] + "\n\nВыберите блюдо и откройте его источник:",
+            keyboard(rows),
+        )
+        return
+
+    if data.startswith("cuisine:open:"):
+        slug = data.rsplit(":", 1)[1]
+        row = await storage.cuisine_recipe(slug)
+        if not row:
+            await send_text(message, "Карточка не найдена.", cuisines_keyboard())
+            return
+        await send_text(
+            message, cuisine_recipe_text(row),
+            keyboard([[("👨‍🍳 Приготовить по мотивам", "cuisine:make:" + slug)],
+                      [("📚 Другие блюда этой кухни", "cuisine:list:" + row["cuisine"])],
+                      [("🌍 Все кухни", "view:cuisines")]]),
+        )
+        return
+
+    if data.startswith("cuisine:make:"):
+        slug = data.rsplit(":", 1)[1]
+        row = await storage.cuisine_recipe(slug)
+        if not row or len("catalog:" + slug) > 32:
+            await send_text(message, "Карточка недоступна.", cuisines_keyboard())
+            return
+        await storage.set_mode(user_id, "catalog:" + slug)
+        await send_text(
+            message,
+            f"👨‍🍳 {row['title']} — прекрасный выбор!\n"
+            "Какие продукты есть под рукой, на сколько человек готовим и нужно ли "
+            "что-нибудь исключить? На основе источника подготовлю удобную домашнюю версию.",
+        )
         return
 
     if data == "view:archive":

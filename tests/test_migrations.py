@@ -25,8 +25,10 @@ def test_fresh_db_alembic_builds_memory_and_archive_tables(tmp_path):
         "SELECT name FROM sqlite_master WHERE type='table'"
     )}
     assert {"users", "personal_memories", "recipe_archive",
-            "fermentation_batches", "alembic_version"}.issubset(tables)
-    assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0002_timers"
+            "fermentation_batches", "cuisine_recipes", "alembic_version"}.issubset(tables)
+    assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0003_cuisines"
+    assert con.execute("SELECT COUNT(*) FROM cuisine_recipes").fetchone()[0] >= 23
+    assert con.execute("SELECT kind FROM cuisine_recipes WHERE id='gazpacho'").fetchone()[0] == "quantified"
     con.close()
 
 
@@ -77,7 +79,25 @@ def test_timers_table_exists_after_upgrade_and_upgrade_is_idempotent(tmp_path):
     upgrade(path)
     con = sqlite3.connect(path)
     assert con.execute("SELECT count(*) FROM cooking_timers").fetchone()[0] == 1
-    assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0002_timers"
+    assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0003_cuisines"
+    con.close()
+
+
+
+def test_repeated_migration_keeps_edited_cuisine_entry_and_existing_users(tmp_path):
+    path = tmp_path / "preserve.db"
+    upgrade(path)
+    con = sqlite3.connect(path)
+    con.execute("UPDATE cuisine_recipes SET method=? WHERE id='gazpacho'",
+                ("Редакторская правка",))
+    con.execute("INSERT INTO users(id,mode,preferences,last_recipe,usage_day,usage_count) "
+                "VALUES(31,'ask',?,NULL,'',0)", (json.dumps({"likes": "суп"}, ensure_ascii=False),))
+    con.commit()
+    con.close()
+    upgrade(path)
+    con = sqlite3.connect(path)
+    assert con.execute("SELECT method FROM cuisine_recipes WHERE id='gazpacho'").fetchone()[0] == "Редакторская правка"
+    assert con.execute("SELECT preferences FROM users WHERE id=31").fetchone()[0].find("суп") >= 0
     con.close()
 
 
