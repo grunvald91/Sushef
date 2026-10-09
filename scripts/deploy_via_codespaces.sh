@@ -39,6 +39,7 @@ fi
 "$venv/bin/python" -m pip install --disable-pip-version-check -q -r requirements-dev.txt
 PYTHONPATH="$project/src" "$venv/bin/python" -m compileall -q src tests migrations
 PYTHONPATH="$project/src" "$venv/bin/python" -m pytest -q
+PYTHONPATH="$project/src" "$venv/bin/python" scripts/audit_professional_cards.py
 say "Unit tests passed; no GitHub Actions minutes used."
 
 tmp="$(mktemp -d)"
