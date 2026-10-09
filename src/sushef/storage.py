@@ -9,9 +9,10 @@ from sqlalchemy import delete, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from .models import Base, CuisineRecipe, Conversation, CookingSession, CookingTimer, Favorite, FermentationBatch, FermentationReading, PantryItem, PersonalMemory, RecipeArchive, RecipeFeedback, User, WeeklyPlan
+from .models import Base, CuisineRecipe, CulinaryTechnique, Conversation, CookingSession, CookingTimer, Favorite, FermentationBatch, FermentationReading, PantryItem, PersonalMemory, RecipeArchive, RecipeFeedback, User, WeeklyPlan
 from .timers import MAX_ACTIVE_TIMERS, MAX_MINUTES, MIN_MINUTES
 from .cuisine_catalog import CUISINES, RECIPES, as_row, validate_seed
+from .technique_catalog import TECHNIQUES, CATEGORIES, as_row as technique_as_row, validate_techniques
 from .memory import PROFILE_FIELDS, validate_memory, validate_preference
 
 
@@ -25,6 +26,7 @@ class Storage:
             await conn.run_sync(Base.metadata.create_all)
         # Local/test SQLite also receives the catalog; prod uses Alembic 0003.
         await self.seed_cuisines()
+        await self.seed_techniques()
 
     async def seed_cuisines(self) -> int:
         validate_seed()
@@ -96,10 +98,78 @@ class Storage:
         return [self._cuisine_data(r) for _, r in scores[:min(max(limit, 1), 5)]]
 
 
+    async def seed_techniques(self) -> int:
+        """Idempotent insert; never overwrite editorial corrections."""
+        validate_techniques()
+        added = 0
+        async with self.sessions() as db:
+            existing = set((await db.scalars(select(CulinaryTechnique.id))).all())
+            for item in TECHNIQUES:
+                if item["id"] not in existing:
+                    db.add(CulinaryTechnique(**technique_as_row(item)))
+                    added += 1
+            await db.commit()
+        return added
+
+    @staticmethod
+    def _technique_data(row: CulinaryTechnique) -> dict[str, Any]:
+        return {
+            "id": row.id, "revision": row.revision, "title": row.title,
+            "category": row.category, "cuisine_scope": list(row.cuisine_scope),
+            "tags": list(row.tags), "equipment": list(row.equipment),
+            "outcome": row.outcome, "mechanism": row.mechanism,
+            "controls": list(row.controls), "cues": list(row.cues),
+            "problems": list(row.problems), "limits": row.limits,
+            "source_publisher": row.source_publisher,
+            "source_title": row.source_title, "source_url": row.source_url,
+            "reviewed_on": row.reviewed_on, "evidence": row.evidence,
+        }
+
+    async def technique_cards(self, category: str | None = None) -> list[dict[str, Any]]:
+        if category is not None and category not in CATEGORIES:
+            return []
+        async with self.sessions() as db:
+            stmt = select(CulinaryTechnique)
+            if category is not None:
+                stmt = stmt.where(CulinaryTechnique.category == category)
+            rows = (await db.scalars(stmt.order_by(CulinaryTechnique.title))).all()
+            return [self._technique_data(x) for x in rows]
+
+    async def technique_card(self, technique_id: str) -> dict[str, Any] | None:
+        if not technique_id or len(technique_id) > 40:
+            return None
+        async with self.sessions() as db:
+            row = await db.get(CulinaryTechnique, technique_id)
+            return self._technique_data(row) if row else None
+
+    async def technique_matches(self, query: str, *, limit: int = 2) -> list[dict[str, Any]]:
+        """Small editorial search; no generated proof of safety."""
+        import re
+        words = [w for w in re.findall(r"[а-яёa-z]+", query.casefold()) if len(w) >= 4]
+        if not words:
+            return []
+        async with self.sessions() as db:
+            rows = (await db.scalars(select(CulinaryTechnique))).all()
+        ranked = []
+        for row in rows:
+            score = sum(
+                3 if any(word.startswith(tag) for tag in row.tags)
+                else 0 for word in words
+            )
+            # Technique titles offer stronger evidence of a relevant query.
+            title_words = re.findall(r"[а-яёa-z]+", row.title.casefold())
+            score += sum(4 for word in words if any(
+                word[:5] == title_word[:5] for title_word in title_words
+                if len(title_word) >= 5))
+            if score:
+                ranked.append((score, row.id, row))
+        ranked.sort(key=lambda x: (-x[0], x[1]))
+        return [self._technique_data(row) for _, _, row in ranked[:max(1, min(limit, 3))]]
+
     async def close(self) -> None:
         await self.engine.dispose()
 
-    async def verify_schema_revision(self, required: str = "0003_cuisines") -> None:
+    async def verify_schema_revision(self, required: str = "0004_techniques") -> None:
         """Fail closed when migrations were skipped or the DB is incompatible."""
         try:
             async with self.engine.connect() as conn:
