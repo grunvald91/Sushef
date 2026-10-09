@@ -203,16 +203,44 @@ CHECKED_ON = "2026-10-09"
 
 
 def validate_seed() -> None:
-    ids = set()
+    """Fail even under python -O if editorial data is inconsistent."""
+    import re
+
+    identifiers: set[str] = set()
     for item in RECIPES:
-        assert item["id"] not in ids and item["id"].isascii()
-        ids.add(item["id"])
-        assert item["cuisine"] in CUISINES
-        assert item["kind"] in {"quantified", "reference"}
-        assert item["ingredients"] and item["method"] and item["publisher"]
-        link = urlparse(item["source_url"])
-        assert link.scheme == "https" and link.netloc
-        assert item["kind"] != "quantified" or all(isinstance(x, str) for x in item["ingredients"])
+        slug = item.get("id")
+        if not isinstance(slug, str) or not re.fullmatch(r"[a-z0-9-]{1,28}", slug):
+            raise ValueError("Некорректный ID рецептурной карточки")
+        if slug in identifiers:
+            raise ValueError(f"Повторяющийся ID: {slug}")
+        identifiers.add(slug)
+        if item.get("cuisine") not in CUISINES:
+            raise ValueError(f"Неизвестная кухня: {slug}")
+        if item.get("kind") not in {"quantified", "reference"}:
+            raise ValueError(f"Не указан уровень источниковых данных: {slug}")
+        if not isinstance(item.get("title"), str) or not item["title"].strip():
+            raise ValueError(f"Пустое название: {slug}")
+        if not isinstance(item.get("method"), str) or not item["method"].strip():
+            raise ValueError(f"Отсутствует технологическая основа: {slug}")
+        if not isinstance(item.get("ingredients"), list) or not item["ingredients"]:
+            raise ValueError(f"Нет продуктов: {slug}")
+        if any(not isinstance(i, str) or not i.strip() for i in item["ingredients"]):
+            raise ValueError(f"Пустой элемент состава: {slug}")
+        if not isinstance(item.get("publisher"), str) or not item["publisher"].strip():
+            raise ValueError(f"Не указан издатель: {slug}")
+        link = urlparse(item.get("source_url", ""))
+        if link.scheme != "https" or not link.hostname or link.username or link.password:
+            raise ValueError(f"Неверная ссылка на источник: {slug}")
+        portions = item.get("servings")
+        if portions is not None and (type(portions) is not int or portions < 1):
+            raise ValueError(f"Некорректное число порций: {slug}")
+    grouped = set()
+    for group_id, (label, keys) in CUISINE_GROUPS.items():
+        if not label or not keys or any(key not in CUISINES for key in keys):
+            raise ValueError(f"Ошибка классификации: {group_id}")
+        grouped.update(keys)
+    if grouped != set(CUISINES):
+        raise ValueError("Не все национальные кухни доступны в навигации")
 
 
 def as_row(item: dict) -> dict:
