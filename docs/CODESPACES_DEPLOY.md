@@ -1,6 +1,6 @@
 # Развёртывание Сушефа через GitHub Codespaces без GitHub Actions
 
-**Целевой сервер:** `155.212.162.47` (SSH `root` по ранее работавшему ключу), **проект:** `grunvald91/Sushef`, **ветка:** `feat/cuisine-knowledge-audit-20261009`.
+**Целевой сервер:** `155.212.162.47` (SSH `root` по ранее работавшему ключу), **проект:** `grunvald91/Sushef`, **ветка:** `feat/culinary-technique-cards-20261009`.
 
 Скрипт предназначен для запуска **в Codespace репозитория Sushef**, не в Codespace Ai_growth_os. Он не использует GitHub Actions и не меняет ServGo, AI Growth OS и другие серверные проекты.
 
@@ -14,7 +14,7 @@
 
 ## 1. Codespaces и доступ к секретам
 
-Откройте на GitHub `grunvald91/Sushef`, выберите ветку `feat/cuisine-knowledge-audit-20261009`, затем **Code → Codespaces → Create codespace on feat/cuisine-knowledge-audit-20261009**. Ранее использовавшийся Codespace `silver-space-winner-r467jjq6q695cxr77.github.dev` относился к другому проекту; нужная задача находится в репозитории Sushef.
+Откройте на GitHub `grunvald91/Sushef`, выберите ветку `feat/culinary-technique-cards-20261009`, затем **Code → Codespaces → Create codespace on feat/culinary-technique-cards-20261009**. Ранее использовавшийся Codespace `silver-space-winner-r467jjq6q695cxr77.github.dev` относился к другому проекту; нужная задача находится в репозитории Sushef.
 
 В **GitHub Settings → Codespaces → Secrets → New secret** должны быть доступны именно этому репозиторию:
 
@@ -40,7 +40,7 @@ SSH использует отдельную 0600-копию приватного
 6. Отправка **только** `git archive HEAD` в `/opt/sushef/releases/<commit-sha>`. Серверу не нужны права чтения приватного GitHub-репозитория.
 7. При существующей БД `sushef_pgdata` скрипт **обязательно** делает `pg_dump -Fc` и проверяет структуру архива. Если бэкап невозможен — обновление **не происходит**. Бэкапы остаются в `/opt/sushef/backups/` с закрытыми правами.
 8. Сборка бот-контейнера только проекта `sushef` и `docker compose --project-name sushef up -d`.
-9. Dockerfile применяет Alembic до polling (`0001_memory`, `0002_timers`, `0003_cuisines`), сохраняя существующие данные; бот дополнительно проверяет текущую версию схемы.
+9. Dockerfile применяет Alembic до polling (`0001_memory`, `0002_timers`, `0004_techniques`), сохраняя существующие данные; бот дополнительно проверяет текущую версию схемы.
 10. Проверка устойчивого запуска контейнера. При немедленном падении скрипт пытается вернуть **предыдущую версию кода**, не делает опасный откат схемы и не удаляет БД.
 
 **Существующие сервисы:** никакие команды `docker system prune`, `docker compose down -v`, изменение Nginx, глобальные обновления пакетов и перезапуск других контейнеров не используются. Sushef использует собственный Compose-проект/том/каталог и не публикует порт наружу.
