@@ -1,11 +1,12 @@
 import asyncio
 import logging
 
-from aiogram import Bot, Dispatcher
+from aiogram import Dispatcher
 
 from .bot import router
 from .chef import Chef
 from .config import load_settings
+from .telegram import create_bot
 from .storage import Storage
 from .timer_worker import run_timer_worker
 
@@ -17,7 +18,7 @@ async def main() -> None:
     # Schema changes are managed by Alembic, not create_all on live data.
     await storage.verify_schema_revision()
     chef = Chef(settings)
-    bot = Bot(token=settings.telegram_bot_token)
+    bot = create_bot(settings)
     dp = Dispatcher()
     dp.include_router(router)
     timer_task = None

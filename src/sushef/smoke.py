@@ -7,15 +7,15 @@ from __future__ import annotations
 
 import asyncio
 
-from aiogram import Bot
 
 from .chef import Chef
 from .config import load_settings
+from .telegram import create_bot
 
 
 async def main() -> None:
     settings = load_settings()
-    bot = Bot(token=settings.telegram_bot_token)
+    bot = create_bot(settings)
     try:
         await bot.get_me()
         print("Telegram Bot API: OK")
