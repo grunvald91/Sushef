@@ -55,7 +55,7 @@ def style_comparison(prefs: dict[str, str]) -> str:
              ("Одна ситуация: есть кабачок и яйца. Выбери приятный тон.\n"
               if informal else "Одна ситуация: есть кабачок и яйца. Выберите приятный тон.\n")]
     for key, label in STYLE_LABELS.items():
-        lines.append(f"{label}\n«{example(key, prefs)}»\n")
+        lines.append(f"{label} — {STYLE_DESCRIPTIONS[key]}\n«{example(key, prefs)}»\n")
     lines.append("Любой стиль можно изменить или сочетать с другим.")
     return "\n".join(lines)
 
