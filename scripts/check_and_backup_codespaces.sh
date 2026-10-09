@@ -76,5 +76,6 @@ say "Running local tests without GitHub Actions..."
 .venv/bin/python -m pip install --disable-pip-version-check -q -r requirements-dev.txt
 PYTHONPATH=src .venv/bin/python -m compileall -q src tests migrations
 PYTHONPATH=src .venv/bin/python -m pytest -q
+PYTHONPATH=src .venv/bin/python scripts/audit_professional_cards.py
 say "Full test suite passed. Production bot and schema were not changed."
 
