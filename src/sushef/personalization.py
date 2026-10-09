@@ -50,7 +50,10 @@ def example(style: str, prefs: dict[str, str]) -> str:
 
 
 def style_comparison(prefs: dict[str, str]) -> str:
-    lines = ["🎭 Как будет звучать Ваш Сушеф?", "Одна ситуация: есть кабачок и яйца. Выберите то, что приятно именно Вам.\n"]
+    informal = prefs.get("address_form") == "ты"
+    lines = ["🎭 Как будет звучать твой Сушеф?" if informal else "🎭 Как будет звучать Ваш Сушеф?",
+             ("Одна ситуация: есть кабачок и яйца. Выбери приятный тон.\\n"
+              if informal else "Одна ситуация: есть кабачок и яйца. Выберите приятный тон.\\n")]
     for key, label in STYLE_LABELS.items():
         lines.append(f"{label}\n«{example(key, prefs)}»\n")
     lines.append("Любой стиль можно изменить или сочетать с другим.")
@@ -58,7 +61,7 @@ def style_comparison(prefs: dict[str, str]) -> str:
 
 
 def communication_summary(prefs: dict[str, str]) -> str:
-    name = prefs.get("display_name") or "как Вам удобно, без имени"
+    name = prefs.get("display_name") or "без имени"
     form = prefs.get("address_form") or "на «вы» (по умолчанию)"
     style = STYLE_LABELS.get(prefs.get("conversation_style", ""), "")
     if prefs.get("conversation_style") == "custom":
@@ -67,7 +70,8 @@ def communication_summary(prefs: dict[str, str]) -> str:
             f"Обращение: {name}\n"
             f"Форма: {form}\n"
             f"Стиль: {style or 'ещё не выбран'}\n\n"
-            "Эти настройки сохраняются только для Вас. Их можно изменить в любой момент.")
+            "Настройки сохранены в Вашем профиле и могут быть изменены в любой момент." if prefs.get("address_form") != "ты" else
+            "Настройки сохранены в твоём профиле, их можно изменить в любой момент.")
 
 
 def welcome_back(prefs: dict[str, str]) -> str:
