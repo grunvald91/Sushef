@@ -24,6 +24,7 @@ from .cuisine_catalog import CUISINES, CUISINE_GROUPS
 from .technique_catalog import CATEGORIES, technique_context
 from .dish_process_cards_v2 import scale_source_ingredients
 from .config import Settings
+from .telegram_format import telegram_chunks
 from .storage import Storage
 
 logger = logging.getLogger(__name__)
@@ -582,10 +583,14 @@ def week_keyboard(day_index: int) -> InlineKeyboardMarkup:
 
 
 async def send_text(message: Message, text: str, markup: InlineKeyboardMarkup | None = None) -> None:
-    # Ограничение Telegram — 4096 символов; используем запас.
-    chunks = [text[i:i + 3400] for i in range(0, len(text), 3400)] or ["(пустой ответ)"]
+    # Escape model/user HTML, then render supported Markdown safely. Format each
+    # chunk separately: no broken Telegram HTML tags and no visible **stars**.
+    chunks = telegram_chunks(text)
     for i, chunk in enumerate(chunks):
-        await message.answer(chunk, reply_markup=markup if i == len(chunks) - 1 else None)
+        await message.answer(
+            chunk, parse_mode="HTML",
+            reply_markup=markup if i == len(chunks) - 1 else None,
+        )
 
 
 async def private_only(message: Message) -> bool:
