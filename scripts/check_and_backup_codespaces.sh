@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests then a backup of the existing production database; NO DEPLOY.
+# Existing production backup then full local tests; NO DEPLOY.
 set -Eeuo pipefail
 umask 077
 die() { printf '[Sushef ERROR] %s\n' "$*" >&2; exit 1; }
@@ -14,12 +14,8 @@ branch="$(git symbolic-ref --short -q HEAD)" || die "Detached HEAD"
 sha="$(git rev-parse HEAD)"
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "Invalid SHA"
 bash -n scripts/check_and_backup_codespaces.sh || die "Bash syntax error"
-say "Running local tests without GitHub Actions..."
-[ -x .venv/bin/python ] || python3 -m venv .venv
-.venv/bin/python -m pip install --disable-pip-version-check -q -r requirements-dev.txt
-PYTHONPATH=src .venv/bin/python -m compileall -q src tests migrations
-PYTHONPATH=src .venv/bin/python -m pytest -q
-say "Tests passed. Now checking existing database, without modifying bot or schema."
+say "Preparing independent server-side backup before any test run or deployment."
+
 
 host="${SUSHEF_SERVER_HOST:-155.212.162.47}"
 port="${SUSHEF_SERVER_PORT:-22}"
@@ -74,3 +70,11 @@ stat -c 'bytes=%s' "$archive"
 echo 'verified=archive_readable; full_restore_test=NOT_RUN'
 echo 'production_deploy=NOT_PERFORMED; migrations=NOT_PERFORMED'
 REMOTE
+
+say "Running local tests without GitHub Actions..."
+[ -x .venv/bin/python ] || python3 -m venv .venv
+.venv/bin/python -m pip install --disable-pip-version-check -q -r requirements-dev.txt
+PYTHONPATH=src .venv/bin/python -m compileall -q src tests migrations
+PYTHONPATH=src .venv/bin/python -m pytest -q
+say "Full test suite passed. Production bot and schema were not changed."
+
