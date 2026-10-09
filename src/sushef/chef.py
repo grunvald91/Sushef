@@ -48,7 +48,11 @@ def normalize_recipe(text: str) -> dict[str, Any]:
     notes = data.get("safety_notes", [])
     if not isinstance(notes, list) or any(not isinstance(n, str) for n in notes):
         notes = []
+    chef_note = data.get("chef_note", "")
+    if not isinstance(chef_note, str):
+        chef_note = ""
     return {
+        "chef_note": chef_note.strip()[:220],
         "title": title.strip(), "time_minutes": minutes, "servings": servings,
         "ingredients": clean_ingredients,
         "steps": [s[:1200] for s in steps],
