@@ -3,16 +3,16 @@ from urllib.parse import urlparse
 
 import pytest
 
-from sushef.bot import cuisine_recipe_text, cuisines_keyboard, source_reference
-from sushef.cuisine_catalog import CUISINES, RECIPES, CHECKED_ON, as_row, validate_seed
+from sushef.bot import cuisine_recipe_text, cuisines_keyboard, cuisines_group_keyboard, source_reference
+from sushef.cuisine_catalog import CUISINES, CUISINE_GROUPS, RECIPES, CHECKED_ON, as_row, validate_seed
 from sushef.storage import Storage
 from sushef.chef import format_recipe
 
 
 def test_sources_are_explicit_and_have_distinct_evidence_levels():
     validate_seed()
-    assert len(RECIPES) >= 16
-    assert len(CUISINES) >= 8
+    assert len(RECIPES) >= 23
+    assert len(CUISINES) >= 12
     assert len({row["id"] for row in RECIPES}) == len(RECIPES)
     assert any(row.get("source_type") == "public_domain_book" for row in RECIPES)
     assert {row["kind"] for row in RECIPES} == {"quantified", "reference"}
@@ -27,8 +27,17 @@ def test_sources_are_explicit_and_have_distinct_evidence_levels():
 
 def test_cuisine_ui_does_not_claim_every_recipe_is_quantified():
     controls = {b.callback_data for line in cuisines_keyboard().inline_keyboard for b in line}
-    assert "cuisine:list:japanese" in controls
-    assert "cuisine:list:spanish" in controls
+    assert "cuisine:group:mediterranean" in controls
+    assert "cuisine:group:eastern" in controls
+    assert "cuisine:list:japanese" in {
+        b.callback_data for line in cuisines_group_keyboard("eastern").inline_keyboard
+        for b in line
+    }
+    assert "cuisine:list:spanish" in {
+        b.callback_data for line in cuisines_group_keyboard("mediterranean").inline_keyboard
+        for b in line
+    }
+    assert all(key in CUISINES for _, keys in CUISINE_GROUPS.values() for key in keys)
     full = next(row for row in RECIPES if row["id"] == "gazpacho")
     cultural = next(row for row in RECIPES if row["id"] == "pesto")
     assert "есть пропорции" in cuisine_recipe_text(as_row(full))
