@@ -227,17 +227,25 @@ def production_stage_text(row: dict, index: int) -> str:
     if index < 0 or index >= len(stages):
         raise ValueError("Неизвестный этап технологической карты")
     step = stages[index]
+    controls = (row.get("production_spec") or {}).get("process_controls", [])
+    control = controls[index] if index < len(controls) else {}
+    temperature = control.get("verified_temp_C")
+    duration = control.get("verified_minutes")
+    regimes = []
+    if temperature is not None:
+        regimes.append(f"температура {temperature} °C")
+    if duration is not None:
+        regimes.append(f"время {duration} мин")
     return "\n".join([
         f"👨‍🍳 {index + 1}/{len(stages)} — {step['action']}",
         "", "💡 Почему это работает:", step["why"],
         "", "👀 Контрольный признак:", step["cue"],
         "", "🛠 Если не получилось:", step["fix"],
         "",
-        "Температура и время: " +
-        ("сверены с источником" if step.get("temperature") is not None
-         or step.get("time") is not None else
-         "для этого этапа источник не задаёт численный режим."),
-        "Признаки качества не подтверждают микробиологическую безопасность.",
+        "Измеренные режимы: " +
+        (", ".join(regimes) if regimes else
+         "не заданы для этого этапа в проверенной техкарте."),
+        "Контрольные признаки качества не подтверждают безопасность продукта.",
     ])
 
 
