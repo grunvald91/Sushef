@@ -9,8 +9,9 @@ from sqlalchemy import delete, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from .models import Base, Conversation, CookingSession, CookingTimer, Favorite, FermentationBatch, FermentationReading, PantryItem, PersonalMemory, RecipeArchive, RecipeFeedback, User, WeeklyPlan
+from .models import Base, CuisineRecipe, Conversation, CookingSession, CookingTimer, Favorite, FermentationBatch, FermentationReading, PantryItem, PersonalMemory, RecipeArchive, RecipeFeedback, User, WeeklyPlan
 from .timers import MAX_ACTIVE_TIMERS, MAX_MINUTES, MIN_MINUTES
+from .cuisine_catalog import CUISINES, RECIPES, as_row, validate_seed
 from .memory import PROFILE_FIELDS, validate_memory, validate_preference
 
 
@@ -22,11 +23,83 @@ class Storage:
     async def create_tables(self) -> None:
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+        # Local/test SQLite also receives the catalog; prod uses Alembic 0003.
+        await self.seed_cuisines()
+
+    async def seed_cuisines(self) -> int:
+        validate_seed()
+        inserted = 0
+        async with self.sessions() as db:
+            existing = set((await db.scalars(select(CuisineRecipe.id))).all())
+            for item in RECIPES:
+                if item["id"] not in existing:
+                    db.add(CuisineRecipe(**as_row(item)))
+                    inserted += 1
+            await db.commit()
+        return inserted
+
+    @staticmethod
+    def _cuisine_data(row: CuisineRecipe) -> dict[str, Any]:
+        return {
+            "id": row.id, "cuisine": row.cuisine, "cuisine_label": row.cuisine_label,
+            "region": row.region, "title": row.title, "kind": row.kind,
+            "servings": row.servings, "ingredients": list(row.ingredients),
+            "method": row.method, "publisher": row.publisher,
+            "source_url": row.source_url, "source_type": row.source_type,
+            "reviewed_on": row.reviewed_on,
+        }
+
+    async def cuisine_recipes(self, cuisine: str, *, limit: int = 30) -> list[dict[str, Any]]:
+        if cuisine not in CUISINES:
+            return []
+        async with self.sessions() as db:
+            records = (await db.scalars(
+                select(CuisineRecipe)
+                .where(CuisineRecipe.cuisine == cuisine)
+                .order_by(CuisineRecipe.title).limit(min(max(limit, 1), 50))
+            )).all()
+            return [self._cuisine_data(r) for r in records]
+
+    async def cuisine_recipe(self, recipe_id: str) -> dict[str, Any] | None:
+        if not recipe_id or len(recipe_id) > 40:
+            return None
+        async with self.sessions() as db:
+            row = await db.get(CuisineRecipe, recipe_id)
+            return self._cuisine_data(row) if row else None
+
+    async def cuisine_matches(self, query: str, *, limit: int = 3) -> list[dict[str, Any]]:
+        """Cheap deterministic search; no extra model requests or claims of allergen safety."""
+        import re
+        terms = {
+            word[:4] for word in re.findall(r"[а-яёa-z]{4,}", query.casefold())
+            if word not in {"хочу", "можно", "нужно", "есть", "давай", "много", "просто",
+                            "сделай", "помоги", "быстро", "приготовить"}
+        }
+        if not terms:
+            return []
+        async with self.sessions() as db:
+            rows = (await db.scalars(select(CuisineRecipe))).all()
+        scores = []
+        for row in rows:
+            title = row.title.casefold()
+            cuisine_text = (row.cuisine_label + " " + row.region).casefold()
+            ingredients = " ".join(row.ingredients).casefold()
+            score = sum(
+                7 * int(any(t == w[:4] for w in re.findall(r"[а-яёa-z]+", title))) +
+                4 * int(any(t == w[:4] for w in re.findall(r"[а-яёa-z]+", cuisine_text))) +
+                1 * int(any(t == w[:4] for w in re.findall(r"[а-яёa-z]+", ingredients)))
+                for t in terms
+            )
+            if score:
+                scores.append((score, row))
+        scores.sort(key=lambda x: (-x[0], x[1].id))
+        return [self._cuisine_data(r) for _, r in scores[:min(max(limit, 1), 5)]]
+
 
     async def close(self) -> None:
         await self.engine.dispose()
 
-    async def verify_schema_revision(self, required: str = "0002_timers") -> None:
+    async def verify_schema_revision(self, required: str = "0003_cuisines") -> None:
         """Fail closed when migrations were skipped or the DB is incompatible."""
         try:
             async with self.engine.connect() as conn:
