@@ -114,7 +114,7 @@ docker run -d --name "$probe" --network none --memory 256m \
   -e POSTGRES_HOST_AUTH_METHOD=trust "$pg_image" >/dev/null
 ready=0
 for attempt in $(seq 1 30); do
-  if docker exec "$probe" pg_isready -U sushef -d sushef >/dev/null 2>&1; then ready=1; break; fi
+  if docker exec "$probe" pg_isready -h 127.0.0.1 -U sushef -d sushef >/dev/null 2>&1; then ready=1; break; fi
   sleep 1
 done
 [ "$ready" -eq 1 ] || { false; }
