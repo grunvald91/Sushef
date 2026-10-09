@@ -21,6 +21,7 @@ from .science_library import get_knowledge, knowledge_context, knowledge_text, l
 from .pantry import format_quantity, format_shopping_comparison, parse_product_line
 from .weekly import DAY_NAMES, MEAL_NAMES, WeeklyPlanError, format_day, format_full_week
 from .cuisine_catalog import CUISINES, CUISINE_GROUPS
+from .technique_catalog import CATEGORIES, technique_context
 from .config import Settings
 from .storage import Storage
 
@@ -55,6 +56,7 @@ def main_keyboard() -> InlineKeyboardMarkup:
         [("📦 Мои продукты", "view:pantry"), ("📆 Моё меню", "view:week")],
         [("🥗 Мой профиль", "view:profile"), ("💬 Спросить шефа", "mode:ask")],
         [("🌍 Кухни мира и первоисточники", "view:cuisines")],
+        [("🧪 Технология вкуса", "view:techniques")],
         [("🔬 Микробиология и ферментация", "view:ferment")],
     ])
 
@@ -138,6 +140,46 @@ def source_reference(row: dict) -> str:
         "Если возможны замены, объясни, что это адаптация. "
         "Не считай блюдо безопасным для аллергика без отдельной проверки."
     )
+
+
+def technique_categories_keyboard() -> InlineKeyboardMarkup:
+    rows = [[(label, "technique:category:" + key)] for key, label in CATEGORIES.items()]
+    rows.append([("🏠 Главное меню", "view:main")])
+    return keyboard(rows)
+
+
+def technique_card_text(item: dict) -> str:
+    lines = [
+        f"🧪 {item['title']}", f"Цель: {item['outcome']}", "",
+        "Почему это работает:", item["mechanism"], "",
+        "Что контролируем:",
+    ]
+    lines.extend("• " + x for x in item["controls"])
+    lines.extend(["", "Признаки хорошего результата:"])
+    lines.extend("• " + x for x in item["cues"])
+    lines.extend(["", "Если пошло не так:"])
+    for p in item["problems"]:
+        lines.append(f"• {p['symptom']} → {p['repair']}")
+    lines.extend(["", "Границы применения: " + item["limits"], "",
+                  f"Источник: {item['source_publisher']}",
+                  item["source_url"], f"Сверено: {item['reviewed_on']}"])
+    return "\n".join(lines)
+
+
+def cooking_insight_text(session: dict, focus: str = "why") -> str:
+    index = session["step_index"]
+    insights = session["recipe"].get("step_insights", [])
+    data = next((entry for entry in insights
+                 if isinstance(entry, dict) and entry.get("step_index") == index), None)
+    if not data:
+        return ("Для этого шага ещё нет отдельной технологической заметки. "
+                "Задайте вопрос обычным сообщением — разберёмся вместе.")
+    if focus == "fix":
+        problem = data.get("fix") or ""
+        return ("🛠 Если что-то пошло не так:\n\n" + problem if problem
+                else "Опишите, что именно не получилось — подберу способ исправления.")
+    return ("💡 Почему этот шаг важен:\n\n" + data["why"] +
+            ("\n\n👀 На что смотреть:\n" + data["cue"] if data.get("cue") else ""))
 
 
 def recipe_keyboard() -> InlineKeyboardMarkup:
@@ -304,6 +346,7 @@ def cooking_keyboard() -> InlineKeyboardMarkup:
     return keyboard([
         [("⬅️ Предыдущий", "cook:previous"), ("✅ Следующий", "cook:next")],
         [("⏱ Поставить таймер", "cook:timer"), ("🔔 Мои таймеры", "view:timers")],
+        [("💡 Почему так?", "cook:why"), ("🛠 Как исправить?", "cook:fix")],
         [("🥘 Показать рецепт", "recipe:show"), ("🏠 Меню", "view:main")],
     ])
 
