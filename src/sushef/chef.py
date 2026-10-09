@@ -51,7 +51,27 @@ def normalize_recipe(text: str) -> dict[str, Any]:
     chef_note = data.get("chef_note", "")
     if not isinstance(chef_note, str):
         chef_note = ""
+    insight_rows = data.get("step_insights", [])
+    if not isinstance(insight_rows, list):
+        insight_rows = []
+    insights = []
+    seen_steps = set()
+    for row in insight_rows[:10]:
+        if not isinstance(row, dict):
+            continue
+        index = row.get("step_index")
+        if type(index) is not int or not 0 <= index < len(steps) or index in seen_steps:
+            continue
+        why, cue, fix = (row.get(k, "") for k in ("why", "cue", "fix"))
+        if not all(isinstance(v, str) for v in (why, cue, fix)) or not why.strip():
+            continue
+        seen_steps.add(index)
+        insights.append({
+            "step_index": index, "why": why.strip()[:240],
+            "cue": cue.strip()[:180], "fix": fix.strip()[:240],
+        })
     return {
+        "step_insights": insights,
         "chef_note": chef_note.strip()[:220],
         "title": title.strip(), "time_minutes": minutes, "servings": servings,
         "ingredients": clean_ingredients,
@@ -67,13 +87,24 @@ def format_recipe(recipe: dict[str, Any]) -> str:
         lines.insert(2, "👨‍🍳 " + recipe["chef_note"][:220])
     lines.extend(f"• {item['name']} — {item['amount']}" for item in recipe["ingredients"])
     lines.append("\nКак готовить:")
+    insight_map = {i["step_index"]: i for i in recipe.get("step_insights", [])
+                   if isinstance(i, dict) and type(i.get("step_index")) is int}
     for i, step in enumerate(recipe["steps"], 1):
         hint = suggested_timer(recipe, i - 1)
         lines.append(f"{i}. {step}")
+        why = insight_map.get(i - 1, {}).get("why")
+        if isinstance(why, str) and why:
+            lines.append("   💡 Почему: " + why[:240])
         if hint:
             lines.append(f"   ⏱ Можно поставить таймер на {hint['minutes']} мин: {hint['label']}.")
     if recipe.get("step_timers"):
         lines.append("\n⏱ Если понадобится, запустите подсказанный таймер в режиме «Готовим пошагово».")
+    technology = recipe.get("technique_reference")
+    if isinstance(technology, dict):
+        tech_url = technology.get("source_url", "")
+        if isinstance(tech_url, str) and tech_url.startswith("https://"):
+            lines.append("\n🧪 Технологическая справка: " +
+                         str(technology.get("title", "")) + "\n" + tech_url)
     source = recipe.get("catalog_reference")
     if isinstance(source, dict) and source.get("source_url", "").startswith("https://"):
         lines.append("\n📚 По мотивам источника: " +
