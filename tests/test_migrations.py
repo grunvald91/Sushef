@@ -25,8 +25,8 @@ def test_fresh_db_alembic_builds_memory_and_archive_tables(tmp_path):
         "SELECT name FROM sqlite_master WHERE type='table'"
     )}
     assert {"users", "personal_memories", "recipe_archive",
-            "fermentation_batches", "alembic_version"}.issubset(tables)
-    assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0002_timers"
+            "fermentation_batches", "cuisine_recipes", "alembic_version"}.issubset(tables)
+    assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0003_cuisines"
     con.close()
 
 
@@ -77,7 +77,7 @@ def test_timers_table_exists_after_upgrade_and_upgrade_is_idempotent(tmp_path):
     upgrade(path)
     con = sqlite3.connect(path)
     assert con.execute("SELECT count(*) FROM cooking_timers").fetchone()[0] == 1
-    assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0002_timers"
+    assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0003_cuisines"
     con.close()
 
 
