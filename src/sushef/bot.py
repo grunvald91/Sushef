@@ -13,6 +13,7 @@ from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton
 from .chef import Chef, RecipeFormatError, format_recipe
 from .timers import TIMER_PRESETS, MAX_MINUTES, suggested_timer, timer_progress, timer_start_text
 from .memory import MEMORY_KINDS, PROFILE_FIELDS, short_memory_context
+from .personalization import STYLE_LABELS, communication_summary, example, style_comparison, welcome_back
 from .fermentation import PROCESS_LABELS, fermentation_system_context, intake_text
 from .fermentation_journal import SAFETY_REMINDER, observation_text, parse_observation
 from .protocols import assess_process, get_protocol, list_protocols, protocol_context, protocol_summary
@@ -53,6 +54,37 @@ def main_keyboard() -> InlineKeyboardMarkup:
         [("📦 Мои продукты", "view:pantry"), ("📆 Моё меню", "view:week")],
         [("🥗 Мой профиль", "view:profile"), ("💬 Спросить шефа", "mode:ask")],
         [("🔬 Микробиология и ферментация", "view:ferment")],
+    ])
+
+
+def welcome_keyboard() -> InlineKeyboardMarkup:
+    return keyboard([
+        [("🌷 Познакомимся", "hello:start")],
+        [("🍳 Сразу к готовке", "hello:skip")],
+    ])
+
+
+def address_keyboard() -> InlineKeyboardMarkup:
+    return keyboard([
+        [("На «вы»", "hello:address:вы"), ("На «ты»", "hello:address:ты")],
+        [("🍳 Позже", "hello:skip")],
+    ])
+
+
+def style_keyboard() -> InlineKeyboardMarkup:
+    return keyboard(
+        [[(label, "hello:style:" + key)] for key, label in STYLE_LABELS.items()] +
+        [[("🎨 Свой стиль или сочетание", "hello:custom")],
+         [("🍳 Пока к готовке", "hello:skip")]]
+    )
+
+
+def communication_keyboard() -> InlineKeyboardMarkup:
+    return keyboard([
+        [("✏️ Как обращаться", "hello:edit:name")],
+        [("🤝 На «ты» или «вы»", "hello:edit:address")],
+        [("🎭 Выбрать стиль с примерами", "hello:styles")],
+        [("🥗 Мой профиль", "view:profile"), ("🏠 Меню", "view:main")],
     ])
 
 
@@ -162,7 +194,8 @@ async def show_memory(message: Message, storage: Storage, user_id: int) -> None:
         buttons.append([("✅ Запомнить: " + item["value"][:25],
                          f"memory:confirm:{item['id']}"),
                         ("❌ Отмена", f"memory:remove:{item['id']}")])
-    buttons.extend([[("📝 Добавить заметку", "memory:choose")],
+    buttons.extend([[("💬 Как ко мне обращаться", "view:communication")],
+                    [("📝 Добавить заметку", "memory:choose")],
                     [("🧹 Удалить отдельную запись", "memory:forget")],
                     [("🏠 Главное меню", "view:main")]])
     await send_text(message, "\n".join(lines), keyboard(buttons))
@@ -185,6 +218,7 @@ def profile_keyboard() -> InlineKeyboardMarkup:
         [("🌶 Острота", "pref:spice"), ("🥗 Текстуры", "pref:textures")],
         [("💰 Бюджет", "pref:budget"), ("⏱ Время", "pref:cook_time")],
         [("🎓 Уровень", "pref:skill"), ("🧠 Память", "view:memory")],
+        [("💬 Стиль общения", "view:communication")],
         [("🏠 Главное меню", "view:main")],
     ])
 
@@ -192,6 +226,7 @@ def profile_keyboard() -> InlineKeyboardMarkup:
 def profile_text(prefs: dict[str, str]) -> str:
     lines = ["🥗 Ваши настройки кухни:"]
     lines.extend(f"• {label}: {prefs.get(key) or 'не указано'}" for key, label in PREF_LABELS.items())
+    lines.append("\n" + communication_summary(prefs))
     lines.append("\nДля очистки отдельного поля отправьте «-». Острота: без острого/лёгкая/средняя/острая; уровень: начинающий/уверенный/опытный.")
     return "\n".join(lines)
 
@@ -303,15 +338,19 @@ async def private_only(message: Message) -> bool:
 async def start(message: Message, storage: Storage) -> None:
     if not await private_only(message) or not message.from_user:
         return
-    await storage.get_user(message.from_user.id)
-    await send_text(
-        message,
-        "👨‍🍳 Добро пожаловать на кухню Сушефа!\n\n"
-        "Великолепно, что Вы заглянули! Здесь даже картошка чувствует себя звездой ресторана. "
-        "Выбирайте, чем займёмся.\n\n"
-        "Основной режим — текстовый; фото включается отдельно после проверки ClaudeHub, голос пока недоступен.",
-        main_keyboard(),
-    )
+    user = await storage.get_user(message.from_user.id)
+    prefs = user["preferences"]
+    if not prefs.get("conversation_style") and not prefs.get("onboarding_skipped"):
+        await send_text(
+            message,
+            "👨‍🍳 Как приятно познакомиться! Добро пожаловать на кухню Сушефа. 🌷\n\n"
+            "Мне хочется, чтобы Вам здесь было не только вкусно, но и по-настоящему уютно. "
+            "Расскажете, как к Вам лучше обращаться и какой тон общения Вам ближе? "
+            "Это займёт всего пару шагов, а можно сразу перейти к рецептам.",
+            welcome_keyboard(),
+        )
+    else:
+        await send_text(message, welcome_back(prefs), main_keyboard())
 
 
 @router.message(Command("menu", "help"))
@@ -530,6 +569,37 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
     memories = await storage.personal_memories(user_id, limit=10)
     if memories:
         preferences["confirmed_kitchen_memory"] = short_memory_context(memories)
+
+    if mode == "onboard:name":
+        try:
+            await storage.set_preference(user_id, "display_name", text)
+        except ValueError as exc:
+            await send_text(message, "Мне хочется обращаться к Вам правильно. " +
+                            str(exc) + "\nПопробуйте другое имя или нажмите «Без имени».",
+                            keyboard([[("Без имени", "hello:name:skip")]]))
+            return
+        await storage.set_mode(user_id, "ask")
+        await send_text(
+            message, "Как приятно! А теперь маленький вопрос: Вам уютнее на «вы» или на «ты»?",
+            address_keyboard(),
+        )
+        return
+
+    if mode == "onboard:custom":
+        try:
+            await storage.set_preference(user_id, "style_notes", text)
+            await storage.set_preference(user_id, "conversation_style", "custom")
+        except ValueError as exc:
+            await send_text(message, "Пожелание пока не удалось сохранить: " +
+                            str(exc) + "\nНапишите чуть короче или /cancel.")
+            return
+        await storage.set_mode(user_id, "ask")
+        updated = (await storage.get_user(user_id))["preferences"]
+        await send_text(message,
+                        "С удовольствием подстроюсь под Вас! 💛\n\n" +
+                        communication_summary(updated),
+                        communication_keyboard())
+        return
 
     if mode == "timer:custom":
         if not text.isdecimal() or not 1 <= int(text) <= MAX_MINUTES:
@@ -798,7 +868,100 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
     data = callback.data or ""
 
     if data == "view:main":
-        await send_text(message, "Какой прекрасный день, чтобы приготовить что-нибудь вкусное! 👨‍🍳", main_keyboard())
+        prefs = (await storage.get_user(user_id))["preferences"]
+        await send_text(message, welcome_back(prefs), main_keyboard())
+        return
+
+    if data in {"hello:start", "hello:edit:name"}:
+        await storage.set_mode(user_id, "onboard:name")
+        await send_text(
+            message,
+            "🌷 Как Вам приятно, чтобы я к Вам обращался? "
+            "Напишите имя или любое любимое обращение. "
+            "Необязательно настоящее имя — главное, чтобы Вам нравилось.",
+            keyboard([[("⏭ Без имени", "hello:name:skip"),
+                       ("🍳 Позже", "hello:skip")]]),
+        )
+        return
+
+    if data in {"hello:name:skip", "hello:edit:address"}:
+        await storage.set_mode(user_id, "ask")
+        await send_text(message, "С удовольствием! Как лучше общаться — на «вы» или на «ты»?",
+                        address_keyboard())
+        return
+
+    if data.startswith("hello:address:"):
+        form = data.rsplit(":", 1)[1]
+        if form not in {"вы", "ты"}:
+            return
+        await storage.set_preference(user_id, "address_form", form)
+        await storage.set_mode(user_id, "ask")
+        prefs = (await storage.get_user(user_id))["preferences"]
+        await send_text(message, style_comparison(prefs), style_keyboard())
+        return
+
+    if data == "hello:styles":
+        await storage.set_mode(user_id, "ask")
+        prefs = (await storage.get_user(user_id))["preferences"]
+        await send_text(message, style_comparison(prefs), style_keyboard())
+        return
+
+    if data.startswith("hello:style:"):
+        style = data.rsplit(":", 1)[1]
+        if style not in STYLE_LABELS:
+            return
+        prefs = (await storage.get_user(user_id))["preferences"]
+        await send_text(
+            message,
+            STYLE_LABELS[style] + "\n\n«" + example(style, prefs) + "»\n\n"
+            "Хотите, чтобы именно так я с Вами разговаривал?",
+            keyboard([[("💛 Да, это мой стиль", "hello:save:" + style)],
+                      [("🎭 Сравнить остальные", "hello:styles")],
+                      [("🎨 Смешать стили по-своему", "hello:custom")]]),
+        )
+        return
+
+    if data.startswith("hello:save:"):
+        style = data.rsplit(":", 1)[1]
+        if style not in STYLE_LABELS:
+            return
+        await storage.set_preference(user_id, "conversation_style", style)
+        await storage.set_mode(user_id, "ask")
+        prefs = (await storage.get_user(user_id))["preferences"]
+        await send_text(
+            message,
+            "Какая приятная тонкость — мы нашли наш общий язык! 💛\n\n"
+            + welcome_back(prefs),
+            main_keyboard(),
+        )
+        return
+
+    if data == "hello:custom":
+        await storage.set_mode(user_id, "onboard:custom")
+        await send_text(
+            message,
+            "🎨 Как Вам приятнее всего? Можно соединить стили. "
+            "Например: «Галантно, с лёгким юмором; коротко, но душевно». "
+            "Напишите своё пожелание одной фразой (до 200 символов).",
+            keyboard([[("🎭 Посмотреть примеры", "hello:styles"),
+                       ("🍳 Позже", "hello:skip")]]),
+        )
+        return
+
+    if data == "hello:skip":
+        await storage.set_preference(user_id, "onboarding_skipped", "yes")
+        await storage.set_mode(user_id, "ask")
+        await send_text(
+            message,
+            "С радостью! Знакомиться ближе можно и за приготовлением. "
+            "А пока — что вкусного хочется сегодня? 🌷",
+            main_keyboard(),
+        )
+        return
+
+    if data == "view:communication":
+        prefs = (await storage.get_user(user_id))["preferences"]
+        await send_text(message, communication_summary(prefs), communication_keyboard())
         return
 
     if data == "view:archive":
