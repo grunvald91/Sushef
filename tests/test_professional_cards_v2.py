@@ -7,7 +7,7 @@ from sushef.bot import (
     production_overview, production_stage_text, production_quality_text,
     production_scale_text, production_keyboard,
 )
-from sushef.dish_process_cards import DISH_CARDS
+from sushef.dish_process_cards import DISH_CARDS, SOURCE_CARDS
 from sushef.dish_process_cards_v2 import (
     V2_DISH_CARDS, validate_v2_cards, scale_source_ingredients,
 )
@@ -23,7 +23,7 @@ def test_second_versions_are_preserved_and_explicitly_unvalidated():
         assert spec["kitchen_trials"] == 0
         assert spec["status"] == "source_checked_not_kitchen_tested"
         assert spec["gross_net_convention"] == "unknown_in_original_recipe"
-        assert spec["provenance"]["original_url"] == card.get("source_url", spec["provenance"]["original_url"]) or spec["provenance"]["original_url"]
+        assert spec["provenance"]["original_url"] == SOURCE_CARDS[card["recipe_id"]]["source_url"]
         assert spec["provenance"]["ingredient_amounts"] == "source_transcribed"
         assert spec["provenance"]["mechanism_and_repairs"] == "editorial_interpretation"
         for x in spec["ingredients"]:
