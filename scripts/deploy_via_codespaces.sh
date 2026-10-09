@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run from a Sushef GitHub Codespace on feat/cuisine-knowledge-audit-20261009.
+# Run from a Sushef GitHub Codespace on feat/culinary-technique-cards-20261009.
 # Tests run in Codespaces; deployment goes over SSH to 155.212.162.47.
 # NO GitHub Actions and no interaction with ServGo / AI Growth OS.
 set -Eeuo pipefail
@@ -16,7 +16,7 @@ project="$(git rev-parse --show-toplevel 2>/dev/null)" || die "Run inside grunva
 cd "$project"
 [ "$(basename "$project")" = Sushef ] || die "Open the grunvald91/Sushef Codespace (not Ai_growth_os)."
 branch="$(git symbolic-ref -q --short HEAD)" || die "Checkout a branch rather than a detached HEAD."
-[ "$branch" = "feat/cuisine-knowledge-audit-20261009" ] || die "Switch to feat/cuisine-knowledge-audit-20261009 before deployment."
+[ "$branch" = "feat/culinary-technique-cards-20261009" ] || die "Switch to feat/culinary-technique-cards-20261009 before deployment."
 [ -z "$(git status --porcelain)" ] || die "Commit/stash your local changes before deploying the exact committed SHA."
 sha="$(git rev-parse HEAD)"
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "Invalid commit SHA"

@@ -81,6 +81,27 @@ async def test_mock_model_receives_mode_and_returns_text():
 
 
 @pytest.mark.asyncio
+async def test_recipe_uses_bigger_response_budget_for_step_science():
+    payload = {
+        "title": "Салат", "time_minutes": 10, "servings": 2,
+        "ingredients": [{"name": "огурцы", "amount": "200 г"}],
+        "steps": ["Нарезать."],
+        "step_insights": [{"step_index": 0, "why": "Равномерная нарезка помогает текстуре.",
+                           "cue": "Похожие кусочки.", "fix": "Нарезать крупные части."}],
+        "safety_notes": [],
+    }
+    fake = SimpleNamespace(messages=SimpleNamespace(create=AsyncMock(
+        return_value=SimpleNamespace(content=[SimpleNamespace(
+            type="text", text=json.dumps(payload, ensure_ascii=False))
+        ]))))
+    chef = object.__new__(Chef)
+    chef.client, chef.model, chef.max_tokens = fake, "test-model", 1300
+    recipe = await chef.recipe("Огурцы", {})
+    assert recipe["step_insights"][0]["step_index"] == 0
+    assert fake.messages.create.call_args.kwargs["max_tokens"] >= 2600
+
+
+@pytest.mark.asyncio
 async def test_weekly_plan_request_validated():
     data = {"days": [
         {"breakfast": f"Каша {i}", "lunch": f"Суп {i}", "dinner": f"Рагу {i}"}

@@ -51,7 +51,7 @@ def test_notifications_distinguish_reminder_from_food_safety():
     assert "время вышло" in timer_progress(row, now_ts=1060)
     alert = timer_alert(row)
     assert "⏰" in alert and "Рагу" in alert
-    assert "не означает" in alert and "термометром" in alert
+    assert "Проверьте вкус, текстуру" in alert and "термометром" in alert
     assert MIN_MINUTES == 1 and MAX_MINUTES == 240
     assert TIMER_PRESETS == (1, 5, 10, 15, 30)
 
@@ -68,4 +68,4 @@ def test_cooking_ui_proposes_timer_without_starting():
     assert "timer:custom" in buttons
     active = {b.callback_data for row in cooking_keyboard().inline_keyboard for b in row}
     assert {"cook:timer", "view:timers", "cook:next"}.issubset(active)
-    assert "безопасную температуру" in cooking_text({"recipe": base_recipe(), "step_index": 3})
+    assert "дошли до подачи" in cooking_text({"recipe": base_recipe(), "step_index": 3})

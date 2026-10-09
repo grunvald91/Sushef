@@ -141,6 +141,49 @@ class CuisineRecipe(Base):
     tags: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
 
 
+
+class CulinaryTechnique(Base):
+    """Editorial culinary technique: source, mechanism, cues, troubleshooting."""
+    __tablename__ = "culinary_techniques"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    revision: Mapped[str] = mapped_column(String(20), nullable=False)
+    title: Mapped[str] = mapped_column(String(180), nullable=False)
+    category: Mapped[str] = mapped_column(String(30), index=True, nullable=False)
+    cuisine_scope: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    tags: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    equipment: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    outcome: Mapped[str] = mapped_column(Text, nullable=False)
+    mechanism: Mapped[str] = mapped_column(Text, nullable=False)
+    controls: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    cues: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    problems: Mapped[list[dict[str, str]]] = mapped_column(JSON, nullable=False)
+    limits: Mapped[str] = mapped_column(Text, nullable=False)
+    source_publisher: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_title: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_url: Mapped[str] = mapped_column(String(600), nullable=False)
+    reviewed_on: Mapped[str] = mapped_column(String(10), nullable=False)
+    evidence: Mapped[str] = mapped_column(String(40), nullable=False)
+
+
+
+class DishProcessCard(Base):
+    """Quantified recipe plan linked to a separately sourced cuisine recipe."""
+    __tablename__ = "dish_process_cards"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    recipe_id: Mapped[str] = mapped_column(String(40), ForeignKey("cuisine_recipes.id"), index=True, nullable=False)
+    revision: Mapped[str] = mapped_column(String(20), nullable=False)
+    servings: Mapped[int] = mapped_column(Integer, nullable=False)
+    yield_grams: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    equipment: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    ingredients: Mapped[list[dict[str, str]]] = mapped_column(JSON, nullable=False)
+    stages: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    source_url: Mapped[str] = mapped_column(String(600), nullable=False)
+    source_publisher: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_note: Mapped[str] = mapped_column(Text, nullable=False)
+    technique_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    reviewed_on: Mapped[str] = mapped_column(String(10), nullable=False)
+
+
 class CookingTimer(Base):
     """Persistent Telegram timer. Background worker resumes after process restarts.
 

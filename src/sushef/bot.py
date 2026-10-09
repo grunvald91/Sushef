@@ -21,6 +21,7 @@ from .science_library import get_knowledge, knowledge_context, knowledge_text, l
 from .pantry import format_quantity, format_shopping_comparison, parse_product_line
 from .weekly import DAY_NAMES, MEAL_NAMES, WeeklyPlanError, format_day, format_full_week
 from .cuisine_catalog import CUISINES, CUISINE_GROUPS
+from .technique_catalog import CATEGORIES, technique_context
 from .config import Settings
 from .storage import Storage
 
@@ -55,6 +56,7 @@ def main_keyboard() -> InlineKeyboardMarkup:
         [("📦 Мои продукты", "view:pantry"), ("📆 Моё меню", "view:week")],
         [("🥗 Мой профиль", "view:profile"), ("💬 Спросить шефа", "mode:ask")],
         [("🌍 Кухни мира и первоисточники", "view:cuisines")],
+        [("🧪 Технология вкуса", "view:techniques")],
         [("🔬 Микробиология и ферментация", "view:ferment")],
     ])
 
@@ -138,6 +140,89 @@ def source_reference(row: dict) -> str:
         "Если возможны замены, объясни, что это адаптация. "
         "Не считай блюдо безопасным для аллергика без отдельной проверки."
     )
+
+
+def technique_categories_keyboard() -> InlineKeyboardMarkup:
+    rows = [[(label, "technique:category:" + key)] for key, label in CATEGORIES.items()]
+    rows.append([("🏠 Главное меню", "view:main")])
+    return keyboard(rows)
+
+
+def technique_card_text(item: dict) -> str:
+    lines = [
+        f"🧪 {item['title']}", f"Цель: {item['outcome']}", "",
+        "Почему это работает:", item["mechanism"], "",
+        "Что контролируем:",
+    ]
+    lines.extend("• " + x for x in item["controls"])
+    lines.extend(["", "Признаки хорошего результата:"])
+    lines.extend("• " + x for x in item["cues"])
+    lines.extend(["", "Если пошло не так:"])
+    for p in item["problems"]:
+        lines.append(f"• {p['symptom']} → {p['repair']}")
+    lines.extend(["", "Границы применения: " + item["limits"], "",
+                  f"Источник: {item['source_publisher']}",
+                  item["source_url"], f"Сверено: {item['reviewed_on']}"])
+    return "\n".join(lines)
+
+
+def dish_process_card_text(row: dict) -> str:
+    yield_text = (f"{row['yield_grams']} г" if row["yield_grams"] is not None
+                  else "не указан в первоисточнике")
+    lines = [
+        "📋 Профессиональная техкарта блюда · редакция " + row["revision"],
+        f"Порции: {row['servings']} · Выход: {yield_text}",
+        "Инвентарь: " + ", ".join(row["equipment"]), "",
+        "Сырьё и закладка:",
+    ]
+    lines.extend("• " + i["name"] + ": " + i["quantity"] + " " + i["unit"]
+                 for i in row["ingredients"])
+    lines.extend(["", "Технология и контроль:"])
+    for index, stage in enumerate(row["stages"], 1):
+        lines.extend([
+            f"{index}. {stage['action']}",
+            "   Почему: " + stage["why"],
+            "   Признак: " + stage["cue"],
+            "   Если не выходит: " + stage["fix"],
+        ])
+    lines.extend(["", "Примечание: " + row["source_note"], "",
+                  "Источник раскладки: " + row["source_publisher"],
+                  row["source_url"]])
+    return "\n".join(lines)
+
+
+def dish_process_context(row: dict) -> str:
+    """Source quantities vs. editorial interpretations are explicitly separated."""
+    stages = []
+    for stage in row["stages"]:
+        stages.append(stage["action"] + " → " + stage["why"] +
+                      " Признак: " + stage["cue"])
+    return (
+        f"Карта исходного блюда {row['recipe_id']} версии {row['revision']} "
+        f"на {row['servings']} порций. "
+        "Проверенная раскладка из первоисточника: " +
+        "; ".join(i["name"] + " " + i["quantity"] + " " + i["unit"]
+                  for i in row["ingredients"]) + ". " +
+        "Технологические пояснения редакции: " + "; ".join(stages) +
+        ". Если меняешь закладку, отдели адаптацию от первоисточника. " +
+        "Не придумывай точную массу выхода или температуру без дополнительных данных."
+    )
+
+
+def cooking_insight_text(session: dict, focus: str = "why") -> str:
+    index = session["step_index"]
+    insights = session["recipe"].get("step_insights", [])
+    data = next((entry for entry in insights
+                 if isinstance(entry, dict) and entry.get("step_index") == index), None)
+    if not data:
+        return ("Для этого шага ещё нет отдельной технологической заметки. "
+                "Задайте вопрос обычным сообщением — разберёмся вместе.")
+    if focus == "fix":
+        problem = data.get("fix") or ""
+        return ("🛠 Если что-то пошло не так:\n\n" + problem if problem
+                else "Опишите, что именно не получилось — подберу способ исправления.")
+    return ("💡 Почему этот шаг важен:\n\n" + data["why"] +
+            ("\n\n👀 На что смотреть:\n" + data["cue"] if data.get("cue") else ""))
 
 
 def recipe_keyboard() -> InlineKeyboardMarkup:
@@ -304,6 +389,7 @@ def cooking_keyboard() -> InlineKeyboardMarkup:
     return keyboard([
         [("⬅️ Предыдущий", "cook:previous"), ("✅ Следующий", "cook:next")],
         [("⏱ Поставить таймер", "cook:timer"), ("🔔 Мои таймеры", "view:timers")],
+        [("💡 Почему так?", "cook:why"), ("🛠 Как исправить?", "cook:fix")],
         [("🥘 Показать рецепт", "recipe:show"), ("🏠 Меню", "view:main")],
     ])
 
@@ -822,10 +908,12 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
                     await storage.set_mode(user_id, "ask")
                     await send_text(message, "Эта карточка больше недоступна. Выберем другую?", cuisines_keyboard())
                     return
+                dish_tech = await storage.dish_process_card(reference["id"])
                 query = (
                     "Создай удобную домашнюю адаптацию следующего блюда. "
                     "Не называй адаптированные количества каноническим оригиналом.\n"
                     + source_reference(reference) + "\n"
+                    + (dish_process_context(dish_tech) + "\n" if dish_tech else "")
                     + "Доступные продукты и пожелания пользователя: " + text
                 )
             elif mode == "pantry_recipe":
@@ -851,7 +939,22 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
                     query += ("\n\nДля кулинарной ориентации доступны СПРАВОЧНЫЕ карточки "
                               "(они не обязаны подходить запросу и не заменяют ограничения):\n" +
                               "\n\n".join(source_reference(r) for r in references))
+            matching_techniques = await storage.technique_matches(
+                text + ((" " + reference["title"] + " " + reference["method"])
+                        if reference else ""), limit=2
+            )
+            if matching_techniques:
+                query += ("\n\nТехнологические справки (объясняют принципы, "
+                          "но не подтверждают весь новый рецепт):\n" +
+                          technique_context(matching_techniques))
             recipe = await chef.recipe(query, preferences)
+            if matching_techniques:
+                top = matching_techniques[0]
+                recipe["technique_reference"] = {
+                    "id": top["id"], "title": top["title"],
+                    "revision": top["revision"],
+                    "source_url": top["source_url"],
+                }
             if reference:
                 recipe["catalog_reference"] = {
                     "id": reference["id"], "title": reference["title"],
@@ -912,7 +1015,18 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
                 else:
                     await storage.set_mode(user_id, "ask")
                     mode = "ask"
-            answer = await chef.answer(mode, text, preferences, history, context)
+            ai_text = text
+            if mode.startswith("technique:"):
+                item = await storage.technique_card(mode.split(":", 1)[1])
+                await storage.set_mode(user_id, "ask")
+                mode = "ask"
+                if item:
+                    ai_text += "\n\nСправка для ответа:\n" + technique_context([item])
+            elif mode in {"ask", "rescue"}:
+                related = await storage.technique_matches(text, limit=2)
+                if related:
+                    ai_text += "\n\nТехнологические справки:\n" + technique_context(related)
+            answer = await chef.answer(mode, ai_text, preferences, history, context)
             await storage.add_exchange(user_id, text, answer)
             await send_text(message, answer,
                             cooking_keyboard() if mode == "cook" else
@@ -1041,6 +1155,59 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         await send_text(message, communication_summary(prefs), communication_keyboard())
         return
 
+    if data == "view:techniques":
+        await send_text(
+            message,
+            "🧪 Здесь не просто рецепты — секреты, которые делают вкус выразительным. "
+            "Выберите процесс, и я покажу, почему он работает, как его контролировать "
+            "и как спасти результат, если что-то пошло не так.",
+            technique_categories_keyboard(),
+        )
+        return
+
+    if data.startswith("technique:category:"):
+        category = data.rsplit(":", 1)[1]
+        if category not in CATEGORIES:
+            return
+        items = await storage.technique_cards(category)
+        rows = [[(entry["title"][:52], "technique:open:" + entry["id"])] for entry in items]
+        rows.append([("🧪 Все технологии", "view:techniques")])
+        await send_text(message, CATEGORIES[category] + "\nВыберите технологическую карту:", keyboard(rows))
+        return
+
+    if data.startswith("technique:open:"):
+        tid = data.rsplit(":", 1)[1]
+        item = await storage.technique_card(tid)
+        if not item:
+            await send_text(message, "Технологическая карта не найдена.", technique_categories_keyboard())
+            return
+        await send_text(
+            message, technique_card_text(item),
+            keyboard([[("💬 Спросить о технике", "technique:ask:" + tid)],
+                      [("↩️ К этой категории", "technique:category:" + item["category"])],
+                      [("🏠 Меню", "view:main")]]),
+        )
+        return
+
+    if data.startswith("technique:ask:"):
+        tid = data.rsplit(":", 1)[1]
+        item = await storage.technique_card(tid)
+        if item is None:
+            return
+        await storage.set_mode(user_id, "technique:" + tid)
+        await send_text(message, "С удовольствием разберём тонкости «" + item["title"] +
+                        "». Что именно хочется понять или попробовать?")
+        return
+
+    if data in {"cook:why", "cook:fix"}:
+        session = await storage.current_cooking(user_id)
+        if not session:
+            await send_text(message, "Сначала выберите блюдо и запустите готовку.", main_keyboard())
+            return
+        await send_text(message, cooking_insight_text(
+            session, "why" if data == "cook:why" else "fix"), cooking_keyboard())
+        return
+
     if data == "view:cuisines":
         await send_text(
             message,
@@ -1080,12 +1247,24 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         if not row:
             await send_text(message, "Карточка не найдена.", cuisines_keyboard())
             return
-        await send_text(
-            message, cuisine_recipe_text(row),
-            keyboard([[("👨‍🍳 Приготовить по мотивам", "cuisine:make:" + slug)],
-                      [("📚 Другие блюда этой кухни", "cuisine:list:" + row["cuisine"])],
-                      [("🌍 Все кухни", "view:cuisines")]]),
-        )
+        techcard = await storage.dish_process_card(slug)
+        buttons = [[("👨‍🍳 Приготовить по мотивам", "cuisine:make:" + slug)]]
+        if techcard:
+            buttons.append([("📋 Профессиональная техкарта", "cuisine:tech:" + slug)])
+        buttons.extend([[("📚 Другие блюда этой кухни", "cuisine:list:" + row["cuisine"])],
+                        [("🌍 Все кухни", "view:cuisines")]])
+        await send_text(message, cuisine_recipe_text(row), keyboard(buttons))
+        return
+
+    if data.startswith("cuisine:tech:"):
+        rid = data.rsplit(":", 1)[1]
+        card = await storage.dish_process_card(rid)
+        if not card:
+            await send_text(message, "Для этого блюда ещё нет полной технологической карты.", cuisines_keyboard())
+            return
+        await send_text(message, dish_process_card_text(card),
+                        keyboard([[("👨‍🍳 Адаптировать блюдо", "cuisine:make:" + rid)],
+                                  [("↩️ К блюду", "cuisine:open:" + rid)]]))
         return
 
     if data.startswith("cuisine:make:"):
