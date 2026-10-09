@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 
 _EGGS_WHY = re.compile(
-    r"(?:\bпри\s+ч[её]м\b|\bзачем\b|\bпочему\b).{0,55}\bяйц[аоыуые]*\b",
+    r"(?:\bпри\s+ч[её]м\b|\bк\s+чему\b|\bзачем\b|\bпочему\b).{0,55}\bяйц[аоыуые]*\b",
     re.IGNORECASE | re.DOTALL,
 )
 _CROQUE_MADAME = re.compile(r"крок[\s-]*мадам", re.IGNORECASE)
