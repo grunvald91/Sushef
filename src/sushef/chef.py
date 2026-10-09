@@ -48,7 +48,11 @@ def normalize_recipe(text: str) -> dict[str, Any]:
     notes = data.get("safety_notes", [])
     if not isinstance(notes, list) or any(not isinstance(n, str) for n in notes):
         notes = []
+    chef_note = data.get("chef_note", "")
+    if not isinstance(chef_note, str):
+        chef_note = ""
     return {
+        "chef_note": chef_note.strip()[:220],
         "title": title.strip(), "time_minutes": minutes, "servings": servings,
         "ingredients": clean_ingredients,
         "steps": [s[:1200] for s in steps],
@@ -59,6 +63,8 @@ def normalize_recipe(text: str) -> dict[str, Any]:
 
 def format_recipe(recipe: dict[str, Any]) -> str:
     lines = [f"🍽 {recipe['title']}", f"⏱ {recipe['time_minutes']} мин • 👥 {recipe['servings']} порц.", "", "Продукты:"]
+    if recipe.get("chef_note"):
+        lines.insert(2, "👨‍🍳 " + recipe["chef_note"][:220])
     lines.extend(f"• {item['name']} — {item['amount']}" for item in recipe["ingredients"])
     lines.append("\nКак готовить:")
     for i, step in enumerate(recipe["steps"], 1):
@@ -67,10 +73,9 @@ def format_recipe(recipe: dict[str, Any]) -> str:
         if hint:
             lines.append(f"   ⏱ Можно поставить таймер на {hint['minutes']} мин: {hint['label']}.")
     if recipe.get("step_timers"):
-        lines.append("\n⏱ Таймер запускается только по нажатию в режиме «Готовим пошагово»."
-                     " Срабатывание не подтверждает безопасность пищи.")
+        lines.append("\n⏱ Если понадобится, запустите подсказанный таймер в режиме «Готовим пошагово».")
     if recipe["safety_notes"]:
-        lines.extend(["\nБезопасность:"] + [f"• {n}" for n in recipe["safety_notes"]])
+        lines.extend(["\nНа что обратить внимание:"] + [f"• {n}" for n in recipe["safety_notes"]])
     return "\n".join(lines)
 
 
