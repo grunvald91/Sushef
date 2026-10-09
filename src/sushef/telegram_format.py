@@ -16,7 +16,7 @@ _ITALIC = re.compile(r"(?<!\*)\*([^\n*]+?)\*(?!\*)")
 _HEADERS = re.compile(r"(?m)^[ \t]{0,3}#{1,4}[ \t]+(.+?)$")
 _BULLETS = re.compile(r"(?m)^[ \t]*[*-][ \t]+")
 _RUN_ON_SENTENCES = re.compile(r"([.!?])(?=[А-ЯЁ])")
-_INLINE_NUMBERED_BOLD = re.compile(r"(?<=[^\\n])(?=\\*\\*\\d{1,2}\\.\\s)")
+_INLINE_NUMBERED_BOLD = re.compile(r"(?<!^)(?<!\n)(?=\*\*\d{1,2}\.\s)")
 
 
 def telegram_html(text: str) -> str:
@@ -39,8 +39,8 @@ def telegram_chunks(text: str, limit: int = CHUNK_SIZE) -> list[str]:
     remaining = text.strip()
     # Models sometimes concatenate finished sentences or numbered alternatives
     # without a space/line break. Restore readability before splitting.
-    remaining = _RUN_ON_SENTENCES.sub(r"\\1 ", remaining)
-    remaining = _INLINE_NUMBERED_BOLD.sub("\\n\\n", remaining)
+    remaining = _RUN_ON_SENTENCES.sub(r"\1 ", remaining)
+    remaining = _INLINE_NUMBERED_BOLD.sub("\n\n", remaining)
     if not remaining:
         return ["(пустой ответ)"]
     result = []
