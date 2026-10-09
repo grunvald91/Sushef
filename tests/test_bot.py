@@ -3,8 +3,8 @@ from sushef.bot import main_keyboard, profile_text
 
 def test_main_keyboard_has_fermentation_entry():
     markup = main_keyboard()
-    assert len(markup.inline_keyboard) == 8
-    assert sum(len(row) for row in markup.inline_keyboard) == 14
+    assert len(markup.inline_keyboard) == 9
+    assert sum(len(row) for row in markup.inline_keyboard) == 15
     data = {button.callback_data for row in markup.inline_keyboard for button in row}
     assert "mode:recipe" in data
     assert "cook:start" in data
@@ -14,6 +14,7 @@ def test_main_keyboard_has_fermentation_entry():
     assert "view:archive" in data
     assert "view:memory" in data
     assert "view:cuisines" in data
+    assert "view:techniques" in data
 
 
 def test_profile_display_defaults():
