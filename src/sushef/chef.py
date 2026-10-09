@@ -74,6 +74,12 @@ def format_recipe(recipe: dict[str, Any]) -> str:
             lines.append(f"   ⏱ Можно поставить таймер на {hint['minutes']} мин: {hint['label']}.")
     if recipe.get("step_timers"):
         lines.append("\n⏱ Если понадобится, запустите подсказанный таймер в режиме «Готовим пошагово».")
+    source = recipe.get("catalog_reference")
+    if isinstance(source, dict) and source.get("source_url", "").startswith("https://"):
+        lines.append("\n📚 По мотивам источника: " +
+                     str(source.get("publisher", "кулинарный источник")) +
+                     "\n" + source["source_url"])
+        lines.append("Это адаптация для Ваших продуктов, а не дословная рецептура.")
     if recipe["safety_notes"]:
         lines.extend(["\nНа что обратить внимание:"] + [f"• {n}" for n in recipe["safety_notes"]])
     return "\n".join(lines)
