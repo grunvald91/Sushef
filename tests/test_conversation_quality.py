@@ -25,6 +25,10 @@ def test_reported_formatting_becomes_readable_telegram_html():
     assert "<b>1. Крок-мадам</b>" in rendered
     assert "<b>2. Картофельные драники с ветчиной и сыром</b>" in rendered
     assert "**" not in rendered
+    readable = telegram_chunks(REPORTED_BOT_REPLY)[0]
+    assert "\n\n<b>1. Крок-мадам</b>" in readable
+    assert "\n\n<b>2. Картофельные драники с ветчиной и сыром</b>" in readable
+    assert telegram_chunks("Вкусно.Предложу два варианта.")[0] == "Вкусно. Предложу два варианта."
 
 
 def test_html_escapes_untrusted_model_and_user_markup():
