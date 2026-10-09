@@ -124,6 +124,7 @@ async def test_technique_library_is_persistent_isolated_from_user_memory(tmp_pat
         matches = await db.technique_matches("Хочу корочку, подрумянить грибы")
         assert matches and matches[0]["id"] == "maillard"
         assert await db.technique_matches("тут нет рецепта") == []
+        assert await db.technique_matches("оливковое масло") == []
         card = await db.dish_process_card("gazpacho")
         assert card and len(card["stages"]) == 3
         assert card["yield_grams"] is None
