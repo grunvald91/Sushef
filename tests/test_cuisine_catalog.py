@@ -25,6 +25,19 @@ def test_sources_are_explicit_and_have_distinct_evidence_levels():
         assert len(("cuisine:make:" + record["id"]).encode("utf-8")) <= 64
 
 
+def test_invalid_editorial_seed_is_rejected_even_without_asserts(monkeypatch):
+    import sushef.cuisine_catalog as catalog
+    duplicate = dict(RECIPES[0])
+    monkeypatch.setattr(catalog, "RECIPES", RECIPES + [duplicate])
+    with pytest.raises(ValueError, match="ID"):
+        catalog.validate_seed()
+    broken = dict(RECIPES[0], id="bad-source", source_url="http://not-https.example")
+    monkeypatch.setattr(catalog, "RECIPES", RECIPES + [broken])
+    with pytest.raises(ValueError, match="ссылка"):
+        catalog.validate_seed()
+
+
+
 def test_cuisine_ui_does_not_claim_every_recipe_is_quantified():
     controls = {b.callback_data for line in cuisines_keyboard().inline_keyboard for b in line}
     assert "cuisine:group:mediterranean" in controls
