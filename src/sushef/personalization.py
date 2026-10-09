@@ -66,12 +66,13 @@ def communication_summary(prefs: dict[str, str]) -> str:
     style = STYLE_LABELS.get(prefs.get("conversation_style", ""), "")
     if prefs.get("conversation_style") == "custom":
         style = "Свой стиль: " + prefs.get("style_notes", "индивидуальный")
-    return ("💬 Наше общение\n"
-            f"Обращение: {name}\n"
-            f"Форма: {form}\n"
-            f"Стиль: {style or 'ещё не выбран'}\n\n"
-            "Настройки сохранены в Вашем профиле и могут быть изменены в любой момент." if prefs.get("address_form") != "ты" else
-            "Настройки сохранены в твоём профиле, их можно изменить в любой момент.")
+    footer = ("Настройки сохранены в твоём профиле, их можно изменить в любой момент."
+              if prefs.get("address_form") == "ты" else
+              "Настройки сохранены в Вашем профиле и могут быть изменены в любой момент.")
+    return ("💬 Наше общение\\n"
+            f"Обращение: {name}\\n"
+            f"Форма: {form}\\n"
+            f"Стиль: {style or 'ещё не выбран'}\\n\\n" + footer)
 
 
 def welcome_back(prefs: dict[str, str]) -> str:
