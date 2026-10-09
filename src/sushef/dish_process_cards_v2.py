@@ -169,6 +169,18 @@ def validate_v2_cards() -> None:
         )
         if any(measures.get(name) is not None for name in mandatory_unknowns):
             raise ValueError("Неподтверждённый числовой параметр")
+        origin = SOURCE_CARDS[card["recipe_id"]]
+        provenance = spec["provenance"]
+        if provenance["original_url"] != origin["source_url"] or provenance["original_servings"] != card["servings"]:
+            raise ValueError("Нарушена связь с первоисточником")
+        first = next((x for x in DISH_CARDS if x["recipe_id"] == card["recipe_id"]), None)
+        if first is None or len(first["ingredients"]) != len(spec["ingredients"]):
+            raise ValueError("Не совпадает исходная раскладка")
+        for saved, original in zip(spec["ingredients"], first["ingredients"]):
+            if (saved["name"] != original["name"] or
+                saved["source_amount"]["value"] != original["quantity"] or
+                saved["source_amount"]["unit"] != original["unit"]):
+                raise ValueError("Редакция не должна тайно менять количества первоисточника")
         if len(spec["process_controls"]) != len(card["stages"]):
             raise ValueError("Пропущен контроль этапа")
         if any(c["stage_index"] != index
