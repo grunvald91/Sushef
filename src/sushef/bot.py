@@ -272,6 +272,10 @@ def production_quality_text(row: dict) -> str:
     for change in spec["substitutions"]:
         lines.append("• " + change["original"] + " → " + change["alternative"] +
                      ": " + change["effect"])
+    lines.append("\nТипичные дефекты и исправления:")
+    for defect in spec["defects"]:
+        lines.append("• " + defect["symptom"] + " — " + defect["possible_cause"] +
+                     "; исправление: " + defect["correction"])
     return "\n".join(lines)
 
 
@@ -285,7 +289,7 @@ def production_scale_text(row: dict, portions: int) -> str:
     ]
     for ing in ingredients:
         lines.append("• " + ing["name"] + ": " + ing["quantity"] + " " + ing["unit"] +
-                     ("" if ing["scaled"] else " (по консистенции/вкусу)"))
+                     ("" if ing["scaled"] else " (уточнить вручную)"))
     lines.append("\nНужно заново проверить вкус, текстуру и фактический выход после приготовления.")
     return "\n".join(lines)
 
