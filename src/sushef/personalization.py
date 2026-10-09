@@ -52,8 +52,8 @@ def example(style: str, prefs: dict[str, str]) -> str:
 def style_comparison(prefs: dict[str, str]) -> str:
     informal = prefs.get("address_form") == "ты"
     lines = ["🎭 Как будет звучать твой Сушеф?" if informal else "🎭 Как будет звучать Ваш Сушеф?",
-             ("Одна ситуация: есть кабачок и яйца. Выбери приятный тон.\\n"
-              if informal else "Одна ситуация: есть кабачок и яйца. Выберите приятный тон.\\n")]
+             ("Одна ситуация: есть кабачок и яйца. Выбери приятный тон.\n"
+              if informal else "Одна ситуация: есть кабачок и яйца. Выберите приятный тон.\n")]
     for key, label in STYLE_LABELS.items():
         lines.append(f"{label}\n«{example(key, prefs)}»\n")
     lines.append("Любой стиль можно изменить или сочетать с другим.")
@@ -69,10 +69,10 @@ def communication_summary(prefs: dict[str, str]) -> str:
     footer = ("Настройки сохранены в твоём профиле, их можно изменить в любой момент."
               if prefs.get("address_form") == "ты" else
               "Настройки сохранены в Вашем профиле и могут быть изменены в любой момент.")
-    return ("💬 Наше общение\\n"
-            f"Обращение: {name}\\n"
-            f"Форма: {form}\\n"
-            f"Стиль: {style or 'ещё не выбран'}\\n\\n" + footer)
+    return ("💬 Наше общение\n"
+            f"Обращение: {name}\n"
+            f"Форма: {form}\n"
+            f"Стиль: {style or 'ещё не выбран'}\n\n" + footer)
 
 
 def welcome_back(prefs: dict[str, str]) -> str:
