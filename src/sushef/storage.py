@@ -5,7 +5,7 @@ from time import time
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import Integer, cast, delete, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -189,7 +189,7 @@ class Storage:
         async with self.sessions() as db:
             row = await db.scalar(
                 select(DishProcessCard).where(DishProcessCard.recipe_id == recipe_id)
-                .order_by(DishProcessCard.revision.desc())
+                .order_by(cast(DishProcessCard.revision, Integer).desc())
                 .limit(1)
             )
             if row is None:
