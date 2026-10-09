@@ -29,6 +29,18 @@ def test_recipe_roundtrip():
     assert "☐ Яйца — 2 шт." in shopping_list(recipe)
 
 
+def test_chef_note_is_optional_bounded_and_presented():
+    payload = sample()
+    payload["chef_note"] = " Какой красивый набор для завтрака! "
+    recipe = normalize_recipe(json.dumps(payload, ensure_ascii=False))
+    assert recipe["chef_note"] == "Какой красивый набор для завтрака!"
+    assert "👨‍🍳 Какой красивый набор" in format_recipe(recipe)
+    payload["chef_note"] = "я" * 500
+    assert len(normalize_recipe(json.dumps(payload))["chef_note"]) == 220
+    payload["chef_note"] = ["not a string"]
+    assert normalize_recipe(json.dumps(payload))["chef_note"] == ""
+
+
 def test_recipe_json_code_fence():
     recipe = normalize_recipe("```json\n" + json.dumps(sample(), ensure_ascii=False) + "\n```")
     assert len(recipe["steps"]) == 2
