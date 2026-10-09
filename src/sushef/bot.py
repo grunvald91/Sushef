@@ -236,17 +236,16 @@ def cooking_text(session: dict[str, Any]) -> str:
     index = session["step_index"]
     steps = recipe.get("steps", [])
     if index >= len(steps):
-        return ("🎉 Все шаги просмотрены! Проверьте фактическую готовность "
-                "и безопасную температуру блюда, прежде чем подавать.")
+        return ("🎉 Мы дошли до подачи! Оцените аромат, вкус и готовность блюда. "
+                "Самое приятное — теперь можно собирать всех за столом.")
     hint = suggested_timer(recipe, index)
     timer_note = (f"\n\n⏱ Рекомендуемый таймер: {hint['minutes']} мин — {hint['label']}."
                   if hint else
                   "\n\n⏱ При необходимости поставьте таймер вручную.")
     return (f"👨‍🍳 {recipe['title']}\nШаг {index + 1}/{len(steps)}:"
             f"\n\n{steps[index]}" + timer_note +
-            "\nОтсчёт запускается только по Вашей кнопке. "
-            "Время не заменяет проверку готовности.\n\n"
-            "Напишите вопрос, если что-то непонятно.")
+            "\nТаймер запускается по кнопке.\n\n"
+            "Если нужна подсказка, просто напишите.")
 
 
 def cooking_keyboard() -> InlineKeyboardMarkup:
@@ -914,7 +913,8 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         await send_text(
             message,
             STYLE_LABELS[style] + "\n\n«" + example(style, prefs) + "»\n\n"
-            "Хотите, чтобы именно так я с Вами разговаривал?",
+            ("Хочешь общаться именно так?" if prefs.get("address_form") == "ты" else
+             "Хотите, чтобы именно так я с Вами разговаривал?"),
             keyboard([[("💛 Да, это мой стиль", "hello:save:" + style)],
                       [("🎭 Сравнить остальные", "hello:styles")],
                       [("🎨 Смешать стили по-своему", "hello:custom")]]),
@@ -940,9 +940,8 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         await storage.set_mode(user_id, "onboard:custom")
         await send_text(
             message,
-            "🎨 Как Вам приятнее всего? Можно соединить стили. "
-            "Например: «Галантно, с лёгким юмором; коротко, но душевно». "
-            "Напишите своё пожелание одной фразой (до 200 символов).",
+            "🎨 Можно соединить стили. Например: «Галантно, с лёгким юмором; коротко, но душевно». "
+            "Расскажите о желаемом тоне одной фразой (до 200 символов).",
             keyboard([[("🎭 Посмотреть примеры", "hello:styles"),
                        ("🍳 Позже", "hello:skip")]]),
         )
@@ -1099,8 +1098,7 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         await send_text(
             message,
             f"⏱ Шаг {cooking['step_index'] + 1}: выберите длительность таймера. "
-            "Можно оставить несколько таймеров на разных шагах. "
-            "Время само по себе не означает готовность или безопасность блюда.",
+            "Можно оставить несколько таймеров на разных шагах.",
             timer_choice_keyboard(cooking)
         )
         return
