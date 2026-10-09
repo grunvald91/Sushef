@@ -67,10 +67,9 @@ def format_recipe(recipe: dict[str, Any]) -> str:
         if hint:
             lines.append(f"   ⏱ Можно поставить таймер на {hint['minutes']} мин: {hint['label']}.")
     if recipe.get("step_timers"):
-        lines.append("\n⏱ Таймер запускается только по нажатию в режиме «Готовим пошагово»."
-                     " Срабатывание не подтверждает безопасность пищи.")
+        lines.append("\n⏱ Если понадобится, запустите подсказанный таймер в режиме «Готовим пошагово».")
     if recipe["safety_notes"]:
-        lines.extend(["\nБезопасность:"] + [f"• {n}" for n in recipe["safety_notes"]])
+        lines.extend(["\nНа что обратить внимание:"] + [f"• {n}" for n in recipe["safety_notes"]])
     return "\n".join(lines)
 
 
