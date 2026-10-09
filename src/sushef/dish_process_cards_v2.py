@@ -92,15 +92,17 @@ def build_v2_card(legacy: dict) -> dict:
             quantitative = False
         production_ingredients.append({
             "name": item["name"],
-            "gross": {"value": item["quantity"], "unit": item["unit"],
-                      "evidence": "published_ingredient_list"},
+            "source_amount": {"value": item["quantity"], "unit": item["unit"],
+                              "evidence": "published_ingredient_list"},
+            "gross": None,
             "net": None,
             "trim_loss_percent": None,
             "verified_numeric": quantitative,
-            "notes": "Нет измерения брутто/нетто; массу нетто и потери не выводить из закладки.",
+            "notes": "Источник даёт количество, но не определяет, относится ли оно к брутто или нетто. Закупочную массу и потери не вычислять.",
         })
     card["production_spec"] = {
         "status": "source_checked_not_kitchen_tested",
+        "gross_net_convention": "unknown_in_original_recipe",
         "kitchen_trials": 0,
         "provenance": {
             "original_publisher": original["publisher"],
@@ -178,7 +180,7 @@ def validate_v2_cards() -> None:
         if not spec["allergens"]["probable"] or not spec["allergens"]["verify"]:
             raise ValueError("Необходимо проверить значимые аллергены")
         for item in spec["ingredients"]:
-            if item["net"] is not None or item["trim_loss_percent"] is not None:
+            if item["gross"] is not None or item["net"] is not None or item["trim_loss_percent"] is not None:
                 raise ValueError("Нет измерений для нетто/потерь")
 
 
@@ -199,8 +201,8 @@ def scale_source_ingredients(card: dict, portions: int) -> list[dict]:
     factor = Decimal(portions) / Decimal(card["servings"])
     rows = []
     for item in card["production_spec"]["ingredients"]:
-        gross = item["gross"]
-        original = gross["value"]
+        amount_data = item["source_amount"]
+        original = amount_data["value"]
         if item["verified_numeric"]:
             value = Decimal(original.replace(",", ".")) * factor
             value = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP).normalize()
@@ -208,5 +210,5 @@ def scale_source_ingredients(card: dict, portions: int) -> list[dict]:
         else:
             amount = original
         rows.append({"name": item["name"], "quantity": amount,
-                     "unit": gross["unit"], "scaled": item["verified_numeric"]})
+                     "unit": amount_data["unit"], "scaled": item["verified_numeric"]})
     return rows
