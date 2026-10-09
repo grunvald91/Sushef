@@ -182,6 +182,7 @@ class DishProcessCard(Base):
     source_note: Mapped[str] = mapped_column(Text, nullable=False)
     technique_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     reviewed_on: Mapped[str] = mapped_column(String(10), nullable=False)
+    production_spec: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
 
 class CookingTimer(Base):

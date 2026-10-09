@@ -22,6 +22,7 @@ from .pantry import format_quantity, format_shopping_comparison, parse_product_l
 from .weekly import DAY_NAMES, MEAL_NAMES, WeeklyPlanError, format_day, format_full_week
 from .cuisine_catalog import CUISINES, CUISINE_GROUPS
 from .technique_catalog import CATEGORIES, technique_context
+from .dish_process_cards_v2 import scale_source_ingredients
 from .config import Settings
 from .storage import Storage
 
@@ -191,21 +192,144 @@ def dish_process_card_text(row: dict) -> str:
     return "\n".join(lines)
 
 
+def production_overview(row: dict) -> str:
+    """Short editorial passport, avoids calling an untested card an approved TTK."""
+    spec = row.get("production_spec")
+    if not spec:
+        return dish_process_card_text(row)
+    meta = spec["measurement"]
+    lines = [
+        "📋 Техкарта блюда · редакция " + row["revision"],
+        "📝 Проверен состав по источнику; производственные измерения ещё не выполнены.",
+        f"Порций по источнику: {row['servings']}",
+        "Выход блюда: " + (str(meta["net_yield_grams"]) + " г"
+                           if meta["net_yield_grams"] is not None
+                           else "не измерен"),
+        "Нетто/потери сырья: не измерены",
+        "Оборудование: " + ", ".join(row["equipment"]), "",
+        "Закладка на исходное число порций:",
+    ]
+    for ingredient in spec["ingredients"]:
+        amount = ingredient["source_amount"]
+        lines.append("• " + ingredient["name"] + ": " +
+                     amount["value"] + " " + amount["unit"])
+    lines.extend([
+        "", "По первоисточнику подтверждены ингредиенты и их исходные количества.",
+        "Причины процессов, контрольные признаки, исправления и замены — "
+        "редакционная интерпретация Сушефа.",
+        "", "Источник: " + row["source_publisher"], row["source_url"],
+    ])
+    return "\n".join(lines)
+
+
+def production_stage_text(row: dict, index: int) -> str:
+    stages = row["stages"]
+    if index < 0 or index >= len(stages):
+        raise ValueError("Неизвестный этап технологической карты")
+    step = stages[index]
+    controls = (row.get("production_spec") or {}).get("process_controls", [])
+    control = controls[index] if index < len(controls) else {}
+    temperature = control.get("verified_temp_C")
+    duration = control.get("verified_minutes")
+    regimes = []
+    if temperature is not None:
+        regimes.append(f"температура {temperature} °C")
+    if duration is not None:
+        regimes.append(f"время {duration} мин")
+    return "\n".join([
+        f"👨‍🍳 {index + 1}/{len(stages)} — {step['action']}",
+        "", "💡 Почему это работает:", step["why"],
+        "", "👀 Контрольный признак:", step["cue"],
+        "", "🛠 Если не получилось:", step["fix"],
+        "",
+        "Измеренные режимы: " +
+        (", ".join(regimes) if regimes else
+         "не заданы для этого этапа в проверенной техкарте."),
+        "Контрольные признаки качества не подтверждают безопасность продукта.",
+    ])
+
+
+def production_quality_text(row: dict) -> str:
+    spec = row.get("production_spec")
+    if not spec:
+        return "Полный паспорт качества пока не заполнен."
+    sensory = spec["sensory"]
+    allergies = spec["allergens"]
+    lines = [
+        "🔎 Контроль качества · " + row["recipe_id"],
+        "Вид: " + sensory["appearance"],
+        "Аромат: " + sensory["aroma"],
+        "Текстура: " + sensory["texture"],
+        "Вкус: " + sensory["taste"],
+        "", "Возможные аллергены: " + "; ".join(allergies["probable"]),
+        "Зависят от подачи: " + "; ".join(allergies["conditional"]),
+        allergies["verify"],
+        "", "Подача: " + spec["service"],
+        "Обращение и хранение: " + spec["handling"],
+        "Срок хранения: не валидирован для конкретной рецептуры.",
+        "", "Замены и их последствия:",
+    ]
+    for change in spec["substitutions"]:
+        lines.append("• " + change["original"] + " → " + change["alternative"] +
+                     ": " + change["effect"])
+    lines.append("\nТипичные дефекты и исправления:")
+    for defect in spec["defects"]:
+        lines.append("• " + defect["symptom"] + " — " + defect["possible_cause"] +
+                     "; исправление: " + defect["correction"])
+    return "\n".join(lines)
+
+
+def production_scale_text(row: dict, portions: int) -> str:
+    ingredients = scale_source_ingredients(row, portions)
+    lines = [
+        f"⚖️ {row['recipe_id']} — закладка на {portions} порц.",
+        "Математический пересчёт с исходных " + str(row["servings"]) + " порций.",
+        "Он не подтверждает автоматически нужную густоту, количество соли или технологический режим.",
+        "",
+    ]
+    for ing in ingredients:
+        lines.append("• " + ing["name"] + ": " + ing["quantity"] + " " + ing["unit"] +
+                     ("" if ing["scaled"] else " (уточнить вручную)"))
+    lines.append("\nНужно заново проверить вкус, текстуру и фактический выход после приготовления.")
+    return "\n".join(lines)
+
+
+def production_keyboard(slug: str, stage: int = 0) -> InlineKeyboardMarkup:
+    return keyboard([
+        [("💡 Этапы и почему", f"cuisine:tcstage:{slug}:{stage}")],
+        [("👀 Качество и аллергены", "cuisine:tcquality:" + slug)],
+        [("⚖️ На 2 порции", f"cuisine:tcscale:{slug}:2"),
+         ("На 6 порций", f"cuisine:tcscale:{slug}:6")],
+        [("👨‍🍳 Приготовить по мотивам", "cuisine:make:" + slug)],
+        [("↩️ К блюду", "cuisine:open:" + slug)],
+    ])
+
+
 def dish_process_context(row: dict) -> str:
     """Source quantities vs. editorial interpretations are explicitly separated."""
     stages = []
     for stage in row["stages"]:
         stages.append(stage["action"] + " → " + stage["why"] +
                       " Признак: " + stage["cue"])
+    spec = row.get("production_spec") or {}
+    sensory = spec.get("sensory") or {}
+    editorial = (
+        " Дополнительные редакторские критерии: консистенция — " +
+        sensory.get("texture", "") + "; вкус — " + sensory.get("taste", "") + "."
+        if sensory else ""
+    )
     return (
         f"Карта исходного блюда {row['recipe_id']} версии {row['revision']} "
         f"на {row['servings']} порций. "
-        "Проверенная раскладка из первоисточника: " +
+        "Проверенная закладка из первоисточника (не автоматически брутто/нетто): " +
         "; ".join(i["name"] + " " + i["quantity"] + " " + i["unit"]
                   for i in row["ingredients"]) + ". " +
-        "Технологические пояснения редакции: " + "; ".join(stages) +
-        ". Если меняешь закладку, отдели адаптацию от первоисточника. " +
-        "Не придумывай точную массу выхода или температуру без дополнительных данных."
+        "Технологические пояснения редакции: " + "; ".join(stages) + "." +
+        editorial +
+        " Все замены и пересчитанные порции обозначай адаптацией. "
+        "Не называй карту утверждённой ресторанной ТТК: лабораторной/производственной "
+        "валидации нет. Не выдумывай массу выхода, закупочный вес, срок хранения "
+        "или температуру без достоверных измерений и источников."
     )
 
 
@@ -1262,9 +1386,49 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         if not card:
             await send_text(message, "Для этого блюда ещё нет полной технологической карты.", cuisines_keyboard())
             return
-        await send_text(message, dish_process_card_text(card),
-                        keyboard([[("👨‍🍳 Адаптировать блюдо", "cuisine:make:" + rid)],
-                                  [("↩️ К блюду", "cuisine:open:" + rid)]]))
+        await send_text(message, production_overview(card),
+                        production_keyboard(rid))
+        return
+
+    if data.startswith("cuisine:tcstage:"):
+        parts = data.split(":")
+        if len(parts) != 4 or not parts[3].isdigit():
+            return
+        rid, step_index = parts[2], int(parts[3])
+        card = await storage.dish_process_card(rid)
+        if not card or step_index >= len(card["stages"]):
+            return
+        next_step = (step_index + 1) % len(card["stages"])
+        await send_text(
+            message, production_stage_text(card, step_index),
+            keyboard([[("➡️ Следующий этап", f"cuisine:tcstage:{rid}:{next_step}")],
+                      [("📋 Паспорт", "cuisine:tech:" + rid),
+                       ("👀 Качество", "cuisine:tcquality:" + rid)]]),
+        )
+        return
+
+    if data.startswith("cuisine:tcquality:"):
+        rid = data.rsplit(":", 1)[1]
+        card = await storage.dish_process_card(rid)
+        if not card:
+            return
+        await send_text(message, production_quality_text(card),
+                        production_keyboard(rid))
+        return
+
+    if data.startswith("cuisine:tcscale:"):
+        parts = data.split(":")
+        if len(parts) != 4 or not parts[3].isdigit():
+            return
+        rid, portions = parts[2], int(parts[3])
+        card = await storage.dish_process_card(rid)
+        if not card or not card.get("production_spec"):
+            return
+        try:
+            formatted = production_scale_text(card, portions)
+        except ValueError:
+            return
+        await send_text(message, formatted, production_keyboard(rid))
         return
 
     if data.startswith("cuisine:make:"):

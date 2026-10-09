@@ -63,7 +63,10 @@ async def test_worker_sends_exact_private_chat_and_marks_delivered(db):
     assert report == {"claimed": 1, "sent": 1, "retry": 0}
     assert bot.send_message.await_count == 1
     kwargs = bot.send_message.await_args.kwargs
-    assert kwargs["chat_id"] == 100 and "не означает" in kwargs["text"]
+    assert kwargs["chat_id"] == 100
+    assert "таймер завершён" in kwargs["text"]
+    assert "Рагу" in kwargs["text"] and "Перемешать" in kwargs["text"]
+    assert "термометром" in kwargs["text"]
     again = await deliver_due_timers(bot, db, now_ts=1070)
     assert again["claimed"] == 0
     assert await db.user_timers(100) == []

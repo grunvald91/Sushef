@@ -9,7 +9,7 @@ repo="$(git rev-parse --show-toplevel)" || die "Not a Git repository"
 cd "$repo"
 [ "$(basename "$repo")" = Sushef ] || die "Wrong repository"
 branch="$(git symbolic-ref --short -q HEAD)" || die "Detached HEAD"
-[ "$branch" = "feat/culinary-technique-cards-20261009" ] || die "Wrong branch"
+[ "$branch" = "feat/pro-techcards-v2-20261009" ] || die "Wrong branch"
 [ -z "$(git status --porcelain)" ] || die "Uncommitted changes; refusing"
 sha="$(git rev-parse HEAD)"
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "Invalid SHA"
@@ -76,5 +76,6 @@ say "Running local tests without GitHub Actions..."
 .venv/bin/python -m pip install --disable-pip-version-check -q -r requirements-dev.txt
 PYTHONPATH=src .venv/bin/python -m compileall -q src tests migrations
 PYTHONPATH=src .venv/bin/python -m pytest -q
+PYTHONPATH=src .venv/bin/python scripts/audit_professional_cards.py
 say "Full test suite passed. Production bot and schema were not changed."
 
