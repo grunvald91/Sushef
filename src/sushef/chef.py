@@ -63,6 +63,8 @@ def normalize_recipe(text: str) -> dict[str, Any]:
 
 def format_recipe(recipe: dict[str, Any]) -> str:
     lines = [f"🍽 {recipe['title']}", f"⏱ {recipe['time_minutes']} мин • 👥 {recipe['servings']} порц.", "", "Продукты:"]
+    if recipe.get("chef_note"):
+        lines.insert(2, "👨‍🍳 " + recipe["chef_note"][:220])
     lines.extend(f"• {item['name']} — {item['amount']}" for item in recipe["ingredients"])
     lines.append("\nКак готовить:")
     for i, step in enumerate(recipe["steps"], 1):
