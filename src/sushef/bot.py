@@ -20,7 +20,7 @@ from .protocols import assess_process, get_protocol, list_protocols, protocol_co
 from .science_library import get_knowledge, knowledge_context, knowledge_text, list_knowledge
 from .pantry import format_quantity, format_shopping_comparison, parse_product_line
 from .weekly import DAY_NAMES, MEAL_NAMES, WeeklyPlanError, format_day, format_full_week
-from .cuisine_catalog import CUISINES
+from .cuisine_catalog import CUISINES, CUISINE_GROUPS
 from .config import Settings
 from .storage import Storage
 
@@ -91,10 +91,22 @@ def communication_keyboard() -> InlineKeyboardMarkup:
 
 
 def cuisines_keyboard() -> InlineKeyboardMarkup:
-    buttons = [[(label, f"cuisine:list:{key}")]
-               for key, (label, _group, _flavour) in CUISINES.items()]
-    buttons.append([("🏠 Главное меню", "view:main")])
+    buttons = [[(label, "cuisine:group:" + group)]
+               for group, (label, _) in CUISINE_GROUPS.items()]
+    buttons.extend([[("🌐 Все 12 национальных кухонь", "cuisine:group:all")],
+                    [("🏠 Главное меню", "view:main")]])
     return keyboard(buttons)
+
+
+def cuisines_group_keyboard(group: str) -> InlineKeyboardMarkup:
+    if group == "all":
+        keys = tuple(CUISINES)
+    else:
+        group_entry = CUISINE_GROUPS.get(group)
+        keys = group_entry[1] if group_entry else ()
+    rows = [[(CUISINES[key][0], "cuisine:list:" + key)] for key in keys]
+    rows.append([("🌍 К группам кухонь", "view:cuisines")])
+    return keyboard(rows)
 
 
 def cuisine_recipe_text(row: dict) -> str:
@@ -1038,6 +1050,15 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
             "Какую кухню исследуем?",
             cuisines_keyboard(),
         )
+        return
+
+    if data.startswith("cuisine:group:"):
+        group = data.rsplit(":", 1)[1]
+        if group != "all" and group not in CUISINE_GROUPS:
+            return
+        label = "🌐 Все кухни" if group == "all" else CUISINE_GROUPS[group][0]
+        await send_text(message, label + "\n\nВыберем направление, которое сегодня вдохновляет?",
+                        cuisines_group_keyboard(group))
         return
 
     if data.startswith("cuisine:list:"):
