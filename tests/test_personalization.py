@@ -65,7 +65,7 @@ def test_custom_voice_and_preference_validation():
         assert validate_preference(key, value)
     for key, value in (
         ("display_name", "x" * 61),
-        ("display_name", "Аня\\nнебезопасное"),
+        ("display_name", "Аня\nнебезопасное"),
         ("address_form", "Вы, пожалуйста"),
         ("conversation_style", "unrecognized"),
         ("style_notes", "x" * 201),
