@@ -908,10 +908,12 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
                     await storage.set_mode(user_id, "ask")
                     await send_text(message, "Эта карточка больше недоступна. Выберем другую?", cuisines_keyboard())
                     return
+                dish_tech = await storage.dish_process_card(reference["id"])
                 query = (
                     "Создай удобную домашнюю адаптацию следующего блюда. "
                     "Не называй адаптированные количества каноническим оригиналом.\n"
                     + source_reference(reference) + "\n"
+                    + (dish_process_context(dish_tech) + "\n" if dish_tech else "")
                     + "Доступные продукты и пожелания пользователя: " + text
                 )
             elif mode == "pantry_recipe":
