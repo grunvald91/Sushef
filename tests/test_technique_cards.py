@@ -93,6 +93,8 @@ def test_old_and_new_recipes_coexist_with_explanations():
     legacy = normalize_recipe(json.dumps(old, ensure_ascii=False))
     assert legacy["step_insights"] == []
     assert "яйца" in format_recipe(legacy)
+    assert "Сохранённый рецепт" in format_recipe({"steps": ["Смешать"]})
+    assert "Продукты" in format_recipe({"title": "Старое блюдо", "steps": ["Смешать"]})
     invalid = dict(data, step_insights={"bad": "shape"})
     assert normalize_recipe(json.dumps(invalid, ensure_ascii=False))["step_insights"] == []
 
