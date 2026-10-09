@@ -82,38 +82,61 @@ def normalize_recipe(text: str) -> dict[str, Any]:
 
 
 def format_recipe(recipe: dict[str, Any]) -> str:
-    lines = [f"🍽 {recipe['title']}", f"⏱ {recipe['time_minutes']} мин • 👥 {recipe['servings']} порц.", "", "Продукты:"]
-    if recipe.get("chef_note"):
-        lines.insert(2, "👨‍🍳 " + recipe["chef_note"][:220])
-    lines.extend(f"• {item['name']} — {item['amount']}" for item in recipe["ingredients"])
+    """Render current and legacy recipes; extra science is optional."""
+    title = recipe.get("title") or "Сохранённый рецепт"
+    meta = []
+    if type(recipe.get("time_minutes")) is int:
+        meta.append(f"⏱ {recipe['time_minutes']} мин")
+    if type(recipe.get("servings")) is int:
+        meta.append(f"👥 {recipe['servings']} порц.")
+    lines = ["🍽 " + str(title)]
+    if meta:
+        lines.append(" • ".join(meta))
+    note = recipe.get("chef_note")
+    if isinstance(note, str) and note:
+        lines.append("👨‍🍳 " + note[:220])
+    lines.extend(["", "Продукты:"])
+    ingredients = recipe.get("ingredients") or []
+    lines.extend(
+        f"• {item.get('name', 'Продукт')} — {item.get('amount', 'по вкусу')}"
+        for item in ingredients if isinstance(item, dict)
+    )
+    if not ingredients:
+        lines.append("• Количества не сохранились в старой карточке.")
     lines.append("\nКак готовить:")
-    insight_map = {i["step_index"]: i for i in recipe.get("step_insights", [])
-                   if isinstance(i, dict) and type(i.get("step_index")) is int}
-    for i, step in enumerate(recipe["steps"], 1):
-        hint = suggested_timer(recipe, i - 1)
-        lines.append(f"{i}. {step}")
-        why = insight_map.get(i - 1, {}).get("why")
-        if isinstance(why, str) and why:
-            lines.append("   💡 Почему: " + why[:240])
+    insight_map = {
+        insight["step_index"]: insight
+        for insight in recipe.get("step_insights", [])
+        if isinstance(insight, dict) and type(insight.get("step_index")) is int
+    }
+    for index, step in enumerate(recipe.get("steps", []), 1):
+        lines.append(f"{index}. {step}")
+        insight = insight_map.get(index - 1, {})
+        reason = insight.get("why")
+        if isinstance(reason, str) and reason:
+            lines.append("   💡 Почему: " + reason[:240])
+        hint = suggested_timer(recipe, index - 1)
         if hint:
             lines.append(f"   ⏱ Можно поставить таймер на {hint['minutes']} мин: {hint['label']}.")
     if recipe.get("step_timers"):
-        lines.append("\n⏱ Если понадобится, запустите подсказанный таймер в режиме «Готовим пошагово».")
+        lines.append("\n⏱ Подсказанный таймер запускается в режиме «Готовим пошагово».")
     technology = recipe.get("technique_reference")
     if isinstance(technology, dict):
-        tech_url = technology.get("source_url", "")
+        tech_url = technology.get("source_url")
         if isinstance(tech_url, str) and tech_url.startswith("https://"):
-            lines.append("\n🧪 Технологическая справка: " +
-                         str(technology.get("title", "")) + "\n" + tech_url)
+            lines.extend(["\n🧪 Технологическая справка: " +
+                          str(technology.get("title", "")), tech_url])
     source = recipe.get("catalog_reference")
-    if isinstance(source, dict) and source.get("source_url", "").startswith("https://"):
-        lines.append("\n📚 По мотивам источника: " +
-                     str(source.get("publisher", "кулинарный источник")) +
-                     "\n" + source["source_url"])
-        lines.append("Это адаптация для Ваших продуктов, а не дословная рецептура.")
-    if recipe["safety_notes"]:
-        lines.extend(["\nНа что обратить внимание:"] + [f"• {n}" for n in recipe["safety_notes"]])
+    if isinstance(source, dict) and isinstance(source.get("source_url"), str) and source["source_url"].startswith("https://"):
+        lines.extend(["\n📚 По мотивам источника: " +
+                      str(source.get("publisher", "кулинарный источник")),
+                      source["source_url"],
+                      "Это адаптация для Ваших продуктов, а не дословная рецептура."])
+    if recipe.get("safety_notes"):
+        lines.extend(["\nНа что обратить внимание:"] +
+                     ["• " + str(note) for note in recipe["safety_notes"]])
     return "\n".join(lines)
+
 
 
 def shopping_list(recipe: dict[str, Any]) -> str:
