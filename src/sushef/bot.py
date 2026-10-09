@@ -224,7 +224,7 @@ def profile_keyboard() -> InlineKeyboardMarkup:
 
 
 def profile_text(prefs: dict[str, str]) -> str:
-    lines = ["🥗 Ваши настройки кухни:"]
+    lines = ["🥗 Твои настройки кухни:" if prefs.get("address_form") == "ты" else "🥗 Ваши настройки кухни:"]
     lines.extend(f"• {label}: {prefs.get(key) or 'не указано'}" for key, label in PREF_LABELS.items())
     lines.append("\n" + communication_summary(prefs))
     lines.append("\nДля очистки отдельного поля отправьте «-». Острота: без острого/лёгкая/средняя/острая; уровень: начинающий/уверенный/опытный.")
@@ -884,6 +884,8 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         return
 
     if data in {"hello:name:skip", "hello:edit:address"}:
+        if data == "hello:name:skip":
+            await storage.set_preference(user_id, "display_name", "-")
         await storage.set_mode(user_id, "ask")
         await send_text(message, "С удовольствием! Как лучше общаться — на «вы» или на «ты»?",
                         address_keyboard())
