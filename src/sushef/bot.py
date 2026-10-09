@@ -912,7 +912,7 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         prefs = (await storage.get_user(user_id))["preferences"]
         await send_text(
             message,
-            STYLE_LABELS[style] + "\n\n«" + example(style, prefs) + "»\n\n"
+            STYLE_LABELS[style] + "\n\n«" + example(style, prefs) + "»\n\n" +
             ("Хочешь общаться именно так?" if prefs.get("address_form") == "ты" else
              "Хотите, чтобы именно так я с Вами разговаривал?"),
             keyboard([[("💛 Да, это мой стиль", "hello:save:" + style)],
