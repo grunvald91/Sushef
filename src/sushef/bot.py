@@ -210,9 +210,9 @@ def production_overview(row: dict) -> str:
         "Закладка на исходное число порций:",
     ]
     for ingredient in spec["ingredients"]:
-        gross = ingredient["gross"]
+        amount = ingredient["source_amount"]
         lines.append("• " + ingredient["name"] + ": " +
-                     gross["value"] + " " + gross["unit"])
+                     amount["value"] + " " + amount["unit"])
     lines.extend([
         "", "По первоисточнику подтверждены ингредиенты и их исходные количества.",
         "Причины процессов, контрольные признаки, исправления и замены — "
