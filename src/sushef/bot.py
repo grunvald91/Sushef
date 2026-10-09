@@ -166,6 +166,49 @@ def technique_card_text(item: dict) -> str:
     return "\n".join(lines)
 
 
+def dish_process_card_text(row: dict) -> str:
+    yield_text = (f"{row['yield_grams']} г" if row["yield_grams"] is not None
+                  else "не указан в первоисточнике")
+    lines = [
+        "📋 Профессиональная техкарта блюда · редакция " + row["revision"],
+        f"Порции: {row['servings']} · Выход: {yield_text}",
+        "Инвентарь: " + ", ".join(row["equipment"]), "",
+        "Сырьё и закладка:",
+    ]
+    lines.extend("• " + i["name"] + ": " + i["quantity"] + " " + i["unit"]
+                 for i in row["ingredients"])
+    lines.extend(["", "Технология и контроль:"])
+    for index, stage in enumerate(row["stages"], 1):
+        lines.extend([
+            f"{index}. {stage['action']}",
+            "   Почему: " + stage["why"],
+            "   Признак: " + stage["cue"],
+            "   Если не выходит: " + stage["fix"],
+        ])
+    lines.extend(["", "Примечание: " + row["source_note"], "",
+                  "Источник раскладки: " + row["source_publisher"],
+                  row["source_url"]])
+    return "\n".join(lines)
+
+
+def dish_process_context(row: dict) -> str:
+    """Source quantities vs. editorial interpretations are explicitly separated."""
+    stages = []
+    for stage in row["stages"]:
+        stages.append(stage["action"] + " → " + stage["why"] +
+                      " Признак: " + stage["cue"])
+    return (
+        f"Карта исходного блюда {row['recipe_id']} версии {row['revision']} "
+        f"на {row['servings']} порций. "
+        "Проверенная раскладка из первоисточника: " +
+        "; ".join(i["name"] + " " + i["quantity"] + " " + i["unit"]
+                  for i in row["ingredients"]) + ". " +
+        "Технологические пояснения редакции: " + "; ".join(stages) +
+        ". Если меняешь закладку, отдели адаптацию от первоисточника. " +
+        "Не придумывай точную массу выхода или температуру без дополнительных данных."
+    )
+
+
 def cooking_insight_text(session: dict, focus: str = "why") -> str:
     index = session["step_index"]
     insights = session["recipe"].get("step_insights", [])
@@ -1202,12 +1245,24 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         if not row:
             await send_text(message, "Карточка не найдена.", cuisines_keyboard())
             return
-        await send_text(
-            message, cuisine_recipe_text(row),
-            keyboard([[("👨‍🍳 Приготовить по мотивам", "cuisine:make:" + slug)],
-                      [("📚 Другие блюда этой кухни", "cuisine:list:" + row["cuisine"])],
-                      [("🌍 Все кухни", "view:cuisines")]]),
-        )
+        techcard = await storage.dish_process_card(slug)
+        buttons = [[("👨‍🍳 Приготовить по мотивам", "cuisine:make:" + slug)]]
+        if techcard:
+            buttons.append([("📋 Профессиональная техкарта", "cuisine:tech:" + slug)])
+        buttons.extend([[("📚 Другие блюда этой кухни", "cuisine:list:" + row["cuisine"])],
+                        [("🌍 Все кухни", "view:cuisines")]])
+        await send_text(message, cuisine_recipe_text(row), keyboard(buttons))
+        return
+
+    if data.startswith("cuisine:tech:"):
+        rid = data.rsplit(":", 1)[1]
+        card = await storage.dish_process_card(rid)
+        if not card:
+            await send_text(message, "Для этого блюда ещё нет полной технологической карты.", cuisines_keyboard())
+            return
+        await send_text(message, dish_process_card_text(card),
+                        keyboard([[("👨‍🍳 Адаптировать блюдо", "cuisine:make:" + rid)],
+                                  [("↩️ К блюду", "cuisine:open:" + rid)]]))
         return
 
     if data.startswith("cuisine:make:"):
