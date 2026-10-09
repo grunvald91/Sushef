@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from sushef.bot import send_text
+from sushef.bot import send_text, text_message
 from sushef.conversation_quality import correct_egg_followup
 from sushef.personalization import communication_instructions
 from sushef.prompts import build_system
@@ -111,3 +111,35 @@ def test_prompt_prioritizes_direct_answers_and_doesnt_assume_ingredients():
     assert "Лада" in system
     assert "Манера общения" in system
     assert "душевн" in communication_instructions({})
+
+
+@pytest.mark.asyncio
+async def test_telegram_handler_answers_egg_question_without_charging_ai_quota():
+    previous = [
+        {"role": "user", "content": "Есть картошка, ветчина, сыр, сметана. Что приготовить?"},
+        {"role": "assistant", "content": REPORTED_BOT_REPLY},
+    ]
+    storage = SimpleNamespace(
+        get_user=AsyncMock(return_value={"mode": "ask", "preferences": {"address_form": "вы"}}),
+        recent_feedback=AsyncMock(return_value=[]),
+        feedback_patterns=AsyncMock(return_value={"repeated_issues": []}),
+        personal_memories=AsyncMock(return_value=[]),
+        get_history=AsyncMock(return_value=previous),
+        add_exchange=AsyncMock(),
+        use_quota=AsyncMock(side_effect=AssertionError("Direct repair must not call ClaudeHub")),
+    )
+    message = SimpleNamespace(
+        text="А при чём здесь яйца?",
+        from_user=SimpleNamespace(id=71),
+        chat=SimpleNamespace(id=71, type="private"),
+        answer=AsyncMock(),
+    )
+    settings = SimpleNamespace(max_input_chars=3500, daily_ai_limit=25)
+    await text_message(message, storage, object(), settings)
+    storage.use_quota.assert_not_awaited()
+    storage.add_exchange.assert_awaited_once()
+    answer_sent = message.answer.await_args.args[0]
+    assert "крок-мадам" in answer_sent
+    assert "картофельных драников" in answer_sent
+    assert "Яйца в холодильнике найдутся?" not in answer_sent
+    assert message.answer.await_args.kwargs["parse_mode"] == "HTML"
