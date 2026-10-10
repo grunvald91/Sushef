@@ -76,12 +76,31 @@ def communication_summary(prefs: dict[str, str]) -> str:
 
 
 def welcome_back(prefs: dict[str, str]) -> str:
-    name = prefs.get("display_name", "")
+    """Welcoming text grounded in explicitly configured taste preferences only."""
+    name = (prefs.get("display_name") or "").strip()
     informal = prefs.get("address_form") == "ты"
-    if name:
-        return (f"👨‍🍳 {name}, как приятно вновь встретиться на нашей кухне! "
-                + ("Что приготовим сегодня?" if informal else "Что будем готовить сегодня?"))
-    return "👨‍🍳 Как приятно вновь встретиться на нашей кухне! Что будем готовить сегодня?"
+    opener = (
+        f"👨‍🍳 {name}, радостно снова встретить Вас на нашей кухне!"
+        if name and not informal else
+        f"👨‍🍳 {name}, какая радость снова готовить вместе!"
+        if name else
+        "👨‍🍳 Какое удовольствие вновь встретиться на нашей кухне!"
+    )
+    # Respect real tastes; don't invent an emotional or culinary history.
+    taste = prefs.get("cuisines") or prefs.get("likes") or prefs.get("textures")
+    if taste:
+        detail = taste.strip()[:100]
+        if informal:
+            return (opener + f"\n\nМне особенно приятно учитывать твой собственный вкус — "
+                    f"ты указал в профиле: «{detail}». "
+                    "Давай сегодня найдём для него новое красивое воплощение. 🌷")
+        return (opener + f"\n\nЯ с удовольствием учитываю именно Ваши предпочтения: "
+                f"в профиле указано «{detail}». "
+                "Какой интересный оттенок вкуса раскроем сегодня? 🌷")
+    return (opener + "\n\nМне важно, чтобы каждое блюдо отражало именно "
+            + ("твой вкус. Что сегодня особенно хочется приготовить? 🌷"
+               if informal else
+               "Ваш вкус. Что сегодня особенно хочется приготовить? 🌷"))
 
 
 def communication_instructions(prefs: dict[str, str]) -> str:
