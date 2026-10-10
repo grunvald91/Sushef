@@ -4,7 +4,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from sushef.bot import text_message
+from sushef.bot import text_message, convert_dialogue_to_recipe
+from sushef.telegram_dialogue import recipe_context_tag, culinary_answer_has_recipe
 from sushef.telegram_dialogue import (
     rich_dialog_markdown, send_dialogue, structure_culinary_answer,
 )
@@ -143,3 +144,85 @@ async def test_ai_question_in_ordinary_ask_mode_really_calls_rich_dialogue():
     bot.send_rich_message.assert_awaited_once()
     assert "Горбуша" in bot.send_rich_message.await_args.kwargs["rich_message"].markdown
     storage.add_exchange.assert_awaited_once()
+
+
+
+def test_recipe_conversion_is_suggested_only_for_real_recipe_answers():
+    assert culinary_answer_has_recipe(FISH_ANSWER)
+    assert not culinary_answer_has_recipe("Рыбу нужно разморозить в холодной воде.")
+    assert recipe_context_tag("один запрос") != recipe_context_tag("другой запрос")
+    assert len(recipe_context_tag("Горбуша")) == 12
+
+
+@pytest.mark.asyncio
+async def test_free_chat_recipe_conversion_uses_own_last_answer_not_generic_prompt(monkeypatch):
+    import sushef.bot as bot_module
+    monkeypatch.setattr(bot_module, "Message", SimpleNamespace)
+    send_card = AsyncMock()
+    monkeypatch.setattr(bot_module, "send_recipe_card", send_card)
+    previous_question = "Как запечь горбушу кусочками с лимоном и брокколи?"
+    callback = SimpleNamespace(
+        answer=AsyncMock(),
+        from_user=SimpleNamespace(id=89),
+        data="dialogue:recipe:" + recipe_context_tag(previous_question),
+        message=SimpleNamespace(
+            chat=SimpleNamespace(id=89, type="private"),
+            bot=SimpleNamespace(send_chat_action=AsyncMock()),
+            answer=AsyncMock(),
+        ),
+    )
+    history = [
+        {"role": "user", "content": previous_question},
+        {"role": "assistant", "content": FISH_ANSWER},
+    ]
+    storage = SimpleNamespace(
+        get_history=AsyncMock(return_value=history),
+        use_quota=AsyncMock(return_value=True),
+        get_user=AsyncMock(return_value={"preferences": {"likes": "лимон"}}),
+        set_recipe=AsyncMock(),
+        add_exchange=AsyncMock(),
+    )
+    recipe = {
+        "title": "Горбуша с овощами", "time_minutes": 35,
+        "servings": 2, "ingredients": [{"name": "горбуша", "amount": "500 г"}],
+        "steps": ["Подготовьте овощи.", "Запеките рыбу."],
+        "step_timers": [], "step_insights": [], "safety_notes": [],
+    }
+    chef = SimpleNamespace(recipe=AsyncMock(return_value=recipe))
+    settings = SimpleNamespace(daily_ai_limit=25, telegram_rich_recipe_cards=True)
+    await convert_dialogue_to_recipe(callback, storage, chef, settings)
+    chef.recipe.assert_awaited_once()
+    prompt = chef.recipe.await_args.args[0]
+    assert previous_question in prompt and "Пара хитростей" in prompt
+    storage.set_recipe.assert_awaited_once()
+    send_card.assert_awaited_once()
+    assert send_card.await_args.kwargs["rich_enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_old_recipe_button_cannot_transform_unrelated_new_chat(monkeypatch):
+    import sushef.bot as bot_module
+    monkeypatch.setattr(bot_module, "Message", SimpleNamespace)
+    question = "Горбуша с лимоном?"
+    callback = SimpleNamespace(
+        answer=AsyncMock(),
+        from_user=SimpleNamespace(id=89),
+        data="dialogue:recipe:" + recipe_context_tag("старый вопрос"),
+        message=SimpleNamespace(
+            chat=SimpleNamespace(id=89, type="private"),
+            answer=AsyncMock(),
+        ),
+    )
+    storage = SimpleNamespace(
+        get_history=AsyncMock(return_value=[
+            {"role": "user", "content": question},
+            {"role": "assistant", "content": FISH_ANSWER},
+        ]),
+        use_quota=AsyncMock(),
+    )
+    settings = SimpleNamespace(daily_ai_limit=25)
+    chef = SimpleNamespace(recipe=AsyncMock())
+    await convert_dialogue_to_recipe(callback, storage, chef, settings)
+    chef.recipe.assert_not_awaited()
+    storage.use_quota.assert_not_awaited()
+    assert "не последний" in callback.message.answer.await_args.args[0]
