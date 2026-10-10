@@ -8,6 +8,7 @@ errors where a message might already have been delivered.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from html import escape
@@ -111,3 +112,17 @@ async def send_dialogue(
             reply_markup=markup if i == len(chunks) - 1 else None,
         )
     return "html"
+
+
+
+def culinary_answer_has_recipe(text: str) -> bool:
+    """Show conversion CTA only when a complete-ish recipe is actually present."""
+    normal = structure_culinary_answer(text)
+    ingredients = bool(re.search(r"(?im)^(?:#{1,4}\s*)?(?:🥗\s*)?(?:продукты|ингредиенты)\b", normal))
+    steps = len(re.findall(r"(?m)^\d{1,2}[.)]\s+", normal))
+    return ingredients and steps >= 2
+
+
+def recipe_context_tag(question: str) -> str:
+    """Stable short digest prevents buttons on stale answers acting on new chat."""
+    return hashlib.sha256(question.encode("utf-8")).hexdigest()[:12]
