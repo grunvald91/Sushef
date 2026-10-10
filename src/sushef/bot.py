@@ -8,7 +8,7 @@ from typing import Any
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, CopyTextButton, DisabledButton, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from .chef import Chef, RecipeFormatError, format_recipe
 from .timers import TIMER_PRESETS, MAX_MINUTES, suggested_timer, timer_progress, timer_start_text
@@ -25,6 +25,7 @@ from .technique_catalog import CATEGORIES, technique_context
 from .dish_process_cards_v2 import scale_source_ingredients
 from .config import Settings
 from .telegram_format import telegram_chunks
+from .telegram_modern import send_recipe_card, show_chef_thinking
 from .conversation_quality import correct_egg_followup
 from .storage import Storage
 
@@ -41,26 +42,54 @@ MODE_PROMPTS = {
 }
 
 
-def keyboard(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
+def keyboard(rows: list[list[tuple[str, str]]], *, force_reply: bool = False) -> InlineKeyboardMarkup:
+    """Modern colored buttons, with only the primary/destructive CTA emphasized."""
+    styles = {
+        "mode:recipe": "primary", "cook:start": "primary",
+        "cook:next": "success", "hello:start": "primary",
+        "recipe:save": "success", "hello:save:warm": "success",
+        "delete:confirm": "danger", "pantry:clear": "danger",
+    }
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=label, callback_data=data) for label, data in row]
+            [InlineKeyboardButton(
+                text=label, callback_data=data,
+                style=styles.get(data, "success" if data.startswith("hello:save:") else None),
+            ) for label, data in row]
             for row in rows
-        ]
+        ],
+        force_reply=force_reply or None,
     )
 
 
 def main_keyboard() -> InlineKeyboardMarkup:
+    """Compact first screen; large catalog and personal functions live below."""
     return keyboard([
-        [("🥘 Что приготовить?", "mode:recipe"), ("🆘 Спасти блюдо", "mode:rescue")],
-        [("📅 Меню на неделю", "mode:plan"), ("👨‍🍳 Готовим вместе", "cook:start")],
-        [("❤️ Мои рецепты", "view:favorites"), ("🛒 Покупки", "view:shop")],
-        [("📖 История рецептов", "view:archive"), ("🧠 Моя память", "view:memory")],
-        [("📦 Мои продукты", "view:pantry"), ("📆 Моё меню", "view:week")],
-        [("🥗 Мой профиль", "view:profile"), ("💬 Спросить шефа", "mode:ask")],
-        [("🌍 Кухни мира и первоисточники", "view:cuisines")],
-        [("🧪 Технология вкуса", "view:techniques")],
+        [("🥘 Что приготовить?", "mode:recipe"), ("💬 Спросить шефа", "mode:ask")],
+        [("👨‍🍳 Готовим вместе", "cook:start"), ("🆘 Спасти блюдо", "mode:rescue")],
+        [("📚 Моя кухня", "view:library"), ("🌍 Кухни мира", "view:cuisines")],
+        [("🧪 Секреты мастерства", "view:techniques"), ("🥗 Мой вкус", "view:profile")],
+        [("✨ Все возможности", "view:more")],
+    ])
+
+
+def library_keyboard() -> InlineKeyboardMarkup:
+    return keyboard([
+        [("❤️ Избранные", "view:favorites"), ("📖 История", "view:archive")],
+        [("📦 Мои продукты", "view:pantry"), ("🛒 Покупки", "view:shop")],
+        [("📅 Создать меню", "mode:plan"), ("📆 Моё меню", "view:week")],
+        [("🧠 Кулинарная память", "view:memory"), ("🔔 Таймеры", "view:timers")],
+        [("🏠 Главное меню", "view:main")],
+    ])
+
+
+def more_keyboard() -> InlineKeyboardMarkup:
+    return keyboard([
         [("🔬 Микробиология и ферментация", "view:ferment")],
+        [("📚 Каталог протоколов", "protocol:list")],
+        [("📅 План на неделю", "mode:plan"), ("🔔 Мои таймеры", "view:timers")],
+        [("💬 Манера общения", "view:communication"), ("🥗 Профиль", "view:profile")],
+        [("🏠 Главное меню", "view:main")],
     ])
 
 
@@ -351,14 +380,29 @@ def cooking_insight_text(session: dict, focus: str = "why") -> str:
             ("\n\n👀 На что смотреть:\n" + data["cue"] if data.get("cue") else ""))
 
 
-def recipe_keyboard() -> InlineKeyboardMarkup:
-    return keyboard([
+def recipe_keyboard(recipe: dict | None = None) -> InlineKeyboardMarkup:
+    rows = [
         [("👨‍🍳 Готовим пошагово", "cook:start")],
         [("❤️ Сохранить рецепт", "recipe:save"), ("🛒 Список продуктов", "view:shop")],
         [("😋 Оценить результат", "view:rating")],
         [("🏠 Главное меню", "view:main")],
-    ])
-
+    ]
+    markup = keyboard(rows)
+    if recipe:
+        entries = [
+            str(i.get("name", "")) + " — " + str(i.get("amount", ""))
+            for i in recipe.get("ingredients", []) if isinstance(i, dict)
+        ]
+        raw = "\n".join(entries)
+        # CopyTextButton is limited to 256 characters. Never truncate a list.
+        if 1 <= len(raw) <= 256:
+            markup.inline_keyboard.insert(
+                -1, [InlineKeyboardButton(
+                    text="📋 Скопировать продукты",
+                    copy_text=CopyTextButton(text=raw),
+                )],
+            )
+    return markup
 
 def fermentation_keyboard() -> InlineKeyboardMarkup:
     return keyboard([
@@ -511,13 +555,17 @@ def cooking_text(session: dict[str, Any]) -> str:
             "Если нужна подсказка, просто напишите.")
 
 
-def cooking_keyboard() -> InlineKeyboardMarkup:
-    return keyboard([
+def cooking_keyboard(session: dict | None = None) -> InlineKeyboardMarkup:
+    markup = keyboard([
         [("⬅️ Предыдущий", "cook:previous"), ("✅ Следующий", "cook:next")],
         [("⏱ Поставить таймер", "cook:timer"), ("🔔 Мои таймеры", "view:timers")],
         [("💡 Почему так?", "cook:why"), ("🛠 Как исправить?", "cook:fix")],
         [("🥘 Показать рецепт", "recipe:show"), ("🏠 Меню", "view:main")],
     ])
+    if session and session["step_index"] == 0:
+        markup.inline_keyboard[0][0] = InlineKeyboardButton(
+            text="⬅️ Это первый шаг", disabled=DisabledButton())
+    return markup
 
 
 def timer_choice_keyboard(session: dict) -> InlineKeyboardMarkup:
@@ -781,6 +829,8 @@ async def inspect_photo(message: Message, storage: Storage, chef: Chef, settings
         return
     try:
         await message.bot.send_chat_action(message.chat.id, "typing")
+        await show_chef_thinking(message, enabled=settings.telegram_draft_preview,
+                                 mode=mode, preferences=preferences)
         stream = await message.bot.download(size)
         if stream is None or not hasattr(stream, "getvalue"):
             raise RuntimeError("Telegram не предоставил изображение")
@@ -1107,8 +1157,10 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
                 ". Рецепт сохранён автоматически в личном архиве."
             )
             await storage.set_mode(user_id, "ask")
-            await send_text(message, "🥘 Рецепт добавлен в Вашу личную коллекцию.\n\n" +
-                            format_recipe(recipe), recipe_keyboard())
+            await send_recipe_card(
+                message, recipe, recipe_keyboard(recipe),
+                rich_enabled=settings.telegram_rich_recipe_cards,
+            )
         elif mode == "plan":
             plan = await chef.weekly_plan(text, preferences, await storage.pantry(user_id))
             await storage.save_weekly_plan(user_id, plan)
@@ -1196,6 +1248,16 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
     user_id = callback.from_user.id
     data = callback.data or ""
 
+    if data == "view:library":
+        await send_text(message, "📚 Здесь живёт Ваша кулинарная история: сохранённые блюда, "
+                        "ингредиенты и идеи для будущих открытий. Что откроем?", library_keyboard())
+        return
+
+    if data == "view:more":
+        await send_text(message, "✨ Ещё больше возможностей для Вашего вкуса — "
+                        "от тонкостей ферментации до продуманного меню на неделю.", more_keyboard())
+        return
+
     if data == "view:main":
         prefs = (await storage.get_user(user_id))["preferences"]
         await send_text(message, welcome_back(prefs), main_keyboard())
@@ -1275,7 +1337,7 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
             "🎨 Можно соединить стили. Например: «Галантно, с лёгким юмором; коротко, но душевно». "
             "Расскажите о желаемом тоне одной фразой (до 200 символов).",
             keyboard([[("🎭 Посмотреть примеры", "hello:styles"),
-                       ("🍳 Позже", "hello:skip")]]),
+                       ("🍳 Позже", "hello:skip")]], force_reply=True),
         )
         return
 
@@ -2070,7 +2132,10 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
     if data == "recipe:show":
         user = await storage.get_user(user_id)
         recipe = user["last_recipe"]
-        await send_text(message, format_recipe(recipe), recipe_keyboard()) if recipe else await send_text(message, "Сначала выберите блюдо.", main_keyboard())
+        if recipe:
+            await send_recipe_card(message, recipe, recipe_keyboard(recipe))
+        else:
+            await send_text(message, "Сначала выберите блюдо.", main_keyboard())
         return
 
     if data == "recipe:save":
@@ -2110,7 +2175,7 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
                             "Я не активировал его для готовки. Составьте новый адаптированный рецепт.\n\n" +
                             format_recipe(recipe), main_keyboard())
         elif recipe:
-            await send_text(message, format_recipe(recipe), recipe_keyboard())
+            await send_recipe_card(message, recipe, recipe_keyboard(recipe))
         else:
             await send_text(message, "Рецепт не найден.", main_keyboard())
         return
@@ -2118,7 +2183,7 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
     if data == "cook:start":
         session = await storage.start_cooking(user_id)
         if session:
-            await send_text(message, cooking_text(session), cooking_keyboard())
+            await send_text(message, cooking_text(session), cooking_keyboard(session))
         else:
             await storage.set_mode(user_id, "recipe")
             await send_text(message, "👨‍🍳 Для начала выберем блюдо. Что у Вас есть из продуктов?")
@@ -2130,7 +2195,11 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
             await send_text(message, "Активной готовки нет.", main_keyboard())
         else:
             previous = await storage.set_cooking_step(user_id, session["step_index"] - 1)
-            await send_text(message, cooking_text(previous), cooking_keyboard())
+            if previous:
+                await send_text(message, cooking_text(previous), cooking_keyboard(previous))
+            else:
+                await send_text(message, "Это самый первый шаг — идти назад пока некуда. 🌷",
+                                cooking_keyboard(session))
         return
 
     if data == "cook:next":
@@ -2140,7 +2209,7 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         elif session["step_index"] >= len(session["recipe"]["steps"]):
             await send_text(message, cooking_text(session) + "\n\nХотите оценить результат?", rating_keyboard())
         else:
-            await send_text(message, cooking_text(session), cooking_keyboard())
+            await send_text(message, cooking_text(session), cooking_keyboard(session))
         return
 
     if data == "delete:confirm":

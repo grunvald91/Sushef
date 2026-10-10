@@ -1,20 +1,19 @@
 from sushef.bot import main_keyboard, profile_text
 
 
-def test_main_keyboard_has_fermentation_entry():
+def test_main_keyboard_is_compact_with_deep_navigation():
+    from sushef.bot import library_keyboard, more_keyboard
     markup = main_keyboard()
-    assert len(markup.inline_keyboard) == 9
-    assert sum(len(row) for row in markup.inline_keyboard) == 15
+    assert len(markup.inline_keyboard) == 5
+    assert sum(len(row) for row in markup.inline_keyboard) == 9
     data = {button.callback_data for row in markup.inline_keyboard for button in row}
-    assert "mode:recipe" in data
-    assert "cook:start" in data
-    assert "view:pantry" in data
-    assert "view:week" in data
-    assert "view:ferment" in data
-    assert "view:archive" in data
-    assert "view:memory" in data
-    assert "view:cuisines" in data
-    assert "view:techniques" in data
+    assert {"mode:recipe", "cook:start", "view:library", "view:more",
+            "view:cuisines", "view:techniques", "view:profile"} <= data
+    library = {button.callback_data for row in library_keyboard().inline_keyboard for button in row}
+    more = {button.callback_data for row in more_keyboard().inline_keyboard for button in row}
+    assert {"view:pantry", "view:week", "view:archive", "view:memory"} <= library
+    assert "view:ferment" in more
+    assert markup.inline_keyboard[0][0].style == "primary"
 
 
 def test_profile_display_defaults():

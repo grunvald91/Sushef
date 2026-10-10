@@ -7,6 +7,7 @@ from .bot import router
 from .chef import Chef
 from .config import load_settings
 from .telegram import create_bot
+from .telegram_modern import configure_bot_commands
 from .storage import Storage
 from .timer_worker import run_timer_worker
 
@@ -25,6 +26,7 @@ async def main() -> None:
     try:
         # Один экземпляр polling. Для нескольких экземпляров нужен webhook + распределённая изоляция.
         await bot.delete_webhook(drop_pending_updates=False)
+        await configure_bot_commands(bot)
         timer_task = asyncio.create_task(run_timer_worker(bot, storage), name="sushef-cooking-timers")
         await dp.start_polling(bot, storage=storage, chef=chef, settings=settings, tasks_concurrency_limit=20)
     finally:
