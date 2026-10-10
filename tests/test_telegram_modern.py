@@ -2,6 +2,7 @@
 
 All tests run offline with mocks and never call Telegram/ClaudeHub.
 """
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -160,7 +161,9 @@ def test_highly_personal_respect_without_false_memory():
     }
     greeting = welcome_back(preferred)
     assert "Анастасия" in greeting and "средиземноморская" in greeting
-    assert "Вы" in greeting
+    # Respectful address includes declined pronouns, not only the nominative.
+    assert re.search(r"\b(?:Вы|Вас|Вам|Вами|Ваш\w*)\b", greeting)
+    assert not re.search(r"\b(?:ты|тебя|тебе|тобой|твой|твоя|твои)\b", greeting, re.I)
     unconfirmed = welcome_back({})
     assert "средиземноморская" not in unconfirmed
     system = build_system("ask", preferred)
