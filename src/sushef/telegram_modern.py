@@ -92,7 +92,7 @@ async def send_recipe_card(
         )
 
 
-async def show_chef_thinking(message: Message, *, enabled: bool = True) -> bool:
+async def show_chef_thinking(message: Message, *, enabled: bool = True, mode: str = "ask", preferences: dict | None = None) -> bool:
     """Temporary Telegram draft while ClaudeHub prepares a full final answer.
 
     Does NOT claim token-by-token streaming. A real, persistent answer always
@@ -103,12 +103,25 @@ async def show_chef_thinking(message: Message, *, enabled: bool = True) -> bool:
     draft_id = getattr(message, "message_id", None)
     if type(draft_id) is not int or draft_id <= 0:
         return False
+    prefs = preferences or {}
+    informal = prefs.get("address_form") == "ты"
+    possessive = "твой" if informal else "Ваш"
+    if mode in {"recipe", "pantry_recipe"} or mode.startswith(("catalog:", "weekly:")):
+        preview = f"👨‍🍳 Бережно подбираю рецепт под {possessive} вкус…"
+    elif mode == "plan":
+        preview = f"📅 Составляю меню с учётом {('твоих' if informal else 'Ваших')} пожеланий…"
+    elif mode.startswith(("ferment:", "science:", "protocol:")):
+        preview = "🔬 Проверяю технологические детали…"
+    elif mode == "rescue":
+        preview = "🛠 Ищу способ помочь блюду…"
+    else:
+        preview = "👨‍🍳 Обдумываю ответ с вниманием к деталям…"
     try:
         await message.bot.send_message_draft(
             chat_id=message.chat.id,
             message_thread_id=getattr(message, "message_thread_id", None),
             draft_id=draft_id,
-            text="👨‍🍳 Подбираю вкусную идею именно для Вас…",
+            text=preview,
             can_stop=False,
         )
         return True
