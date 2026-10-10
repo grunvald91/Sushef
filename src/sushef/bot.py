@@ -8,7 +8,7 @@ from typing import Any
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import BufferedInputFile, CallbackQuery, CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, CopyTextButton, DisabledButton, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from .chef import Chef, RecipeFormatError, format_recipe
 from .timers import TIMER_PRESETS, MAX_MINUTES, suggested_timer, timer_progress, timer_start_text
@@ -555,13 +555,17 @@ def cooking_text(session: dict[str, Any]) -> str:
             "Если нужна подсказка, просто напишите.")
 
 
-def cooking_keyboard() -> InlineKeyboardMarkup:
-    return keyboard([
+def cooking_keyboard(session: dict | None = None) -> InlineKeyboardMarkup:
+    markup = keyboard([
         [("⬅️ Предыдущий", "cook:previous"), ("✅ Следующий", "cook:next")],
         [("⏱ Поставить таймер", "cook:timer"), ("🔔 Мои таймеры", "view:timers")],
         [("💡 Почему так?", "cook:why"), ("🛠 Как исправить?", "cook:fix")],
         [("🥘 Показать рецепт", "recipe:show"), ("🏠 Меню", "view:main")],
     ])
+    if session and session["step_index"] == 0:
+        markup.inline_keyboard[0][0] = InlineKeyboardButton(
+            text="⬅️ Это первый шаг", disabled=DisabledButton())
+    return markup
 
 
 def timer_choice_keyboard(session: dict) -> InlineKeyboardMarkup:
@@ -1332,7 +1336,7 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
             "🎨 Можно соединить стили. Например: «Галантно, с лёгким юмором; коротко, но душевно». "
             "Расскажите о желаемом тоне одной фразой (до 200 символов).",
             keyboard([[("🎭 Посмотреть примеры", "hello:styles"),
-                       ("🍳 Позже", "hello:skip")]]),
+                       ("🍳 Позже", "hello:skip")]], force_reply=True),
         )
         return
 
@@ -2178,7 +2182,7 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
     if data == "cook:start":
         session = await storage.start_cooking(user_id)
         if session:
-            await send_text(message, cooking_text(session), cooking_keyboard())
+            await send_text(message, cooking_text(session), cooking_keyboard(session))
         else:
             await storage.set_mode(user_id, "recipe")
             await send_text(message, "👨‍🍳 Для начала выберем блюдо. Что у Вас есть из продуктов?")
@@ -2190,7 +2194,11 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
             await send_text(message, "Активной готовки нет.", main_keyboard())
         else:
             previous = await storage.set_cooking_step(user_id, session["step_index"] - 1)
-            await send_text(message, cooking_text(previous), cooking_keyboard())
+            if previous:
+                await send_text(message, cooking_text(previous), cooking_keyboard(previous))
+            else:
+                await send_text(message, "Это самый первый шаг — идти назад пока некуда. 🌷",
+                                cooking_keyboard(session))
         return
 
     if data == "cook:next":
@@ -2200,7 +2208,7 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         elif session["step_index"] >= len(session["recipe"]["steps"]):
             await send_text(message, cooking_text(session) + "\n\nХотите оценить результат?", rating_keyboard())
         else:
-            await send_text(message, cooking_text(session), cooking_keyboard())
+            await send_text(message, cooking_text(session), cooking_keyboard(session))
         return
 
     if data == "delete:confirm":
