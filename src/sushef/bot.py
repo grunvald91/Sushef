@@ -26,7 +26,7 @@ from .dish_process_cards_v2 import scale_source_ingredients
 from .config import Settings
 from .telegram_format import telegram_chunks
 from .telegram_modern import send_recipe_card, show_chef_thinking
-from .telegram_dialogue import send_dialogue
+from .telegram_dialogue import send_dialogue, culinary_answer_has_recipe, recipe_context_tag
 from .conversation_quality import correct_egg_followup
 from .storage import Storage
 
@@ -55,7 +55,8 @@ def keyboard(rows: list[list[tuple[str, str]]], *, force_reply: bool = False) ->
         inline_keyboard=[
             [InlineKeyboardButton(
                 text=label, callback_data=data,
-                style=styles.get(data, "success" if data.startswith("hello:save:") else None),
+                style=("primary" if data.startswith("dialogue:recipe:") else
+                       styles.get(data, "success" if data.startswith("hello:save:") else None)),
             ) for label, data in row]
             for row in rows
         ],
@@ -1221,10 +1222,19 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
                     ai_text += "\n\nТехнологические справки:\n" + technique_context(related)
             answer = await chef.answer(mode, ai_text, preferences, history, context)
             await storage.add_exchange(user_id, text, answer)
+            if mode == "ask" and culinary_answer_has_recipe(answer):
+                response_markup = keyboard([
+                    [("🧾 В карточку и готовить",
+                      "dialogue:recipe:" + recipe_context_tag(text))],
+                    [("🏠 Главное меню", "view:main")],
+                ])
+            else:
+                response_markup = (
+                    cooking_keyboard() if mode == "cook" else
+                    fermentation_keyboard() if mode == "ferment" else main_keyboard()
+                )
             await send_dialogue(
-                message, answer,
-                cooking_keyboard() if mode == "cook" else
-                fermentation_keyboard() if mode == "ferment" else main_keyboard(),
+                message, answer, response_markup,
                 rich_enabled=settings.telegram_rich_recipe_cards,
             )
     except (RecipeFormatError, WeeklyPlanError):
@@ -1237,6 +1247,76 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
             "Ваши настройки сохранены.",
             main_keyboard(),
         )
+
+
+@router.callback_query(F.data.startswith("dialogue:recipe:"))
+async def convert_dialogue_to_recipe(
+    callback: CallbackQuery, storage: Storage, chef: Chef, settings: Settings
+) -> None:
+    """Turn the selected free-chat recipe into a proper guided cooking card."""
+    await callback.answer()
+    if not callback.from_user or not isinstance(callback.message, Message):
+        return
+    message = callback.message
+    if message.chat.type != "private":
+        return
+    tag = (callback.data or "").rsplit(":", 1)[-1]
+    history = await storage.get_history(callback.from_user.id, limit=10)
+    question = next(
+        (part.get("content", "") for part in reversed(history)
+         if part.get("role") == "user"), ""
+    )
+    last_answer = next(
+        (part.get("content", "") for part in reversed(history)
+         if part.get("role") == "assistant"), ""
+    )
+    if not question or not last_answer or tag != recipe_context_tag(question):
+        await send_text(message, "Этот ответ уже не последний в переписке. "
+                        "Откройте актуальный рецепт или задайте вопрос ещё раз.",
+                        main_keyboard())
+        return
+    if not culinary_answer_has_recipe(last_answer):
+        await send_text(message, "В этом ответе ещё нет полноценной рецептуры. "
+                        "Давайте уточним продукты и я всё оформлю.",
+                        keyboard([[("🥘 Создать рецепт", "mode:recipe")]]))
+        return
+    if not await storage.use_quota(callback.from_user.id, settings.daily_ai_limit):
+        await send_text(message, "На сегодня лимит ИИ-оформлений исчерпан. "
+                        "Сам текст рецепта останется в истории.", main_keyboard())
+        return
+    prefs = (await storage.get_user(callback.from_user.id))["preferences"]
+    source = (
+        "Оформи предыдущий совет Сушефа в полноценный проверяемый JSON-рецепт "
+        "для пошаговой готовки. Сохраняй основной выбор блюда и исходные "
+        "оговорённые количества, если они уместны и безопасны. "
+        "Если количество не было известно, не притворяйся, что оно измерено. "
+        "Ориентиры времени и температуры корректируй по безопасности и "
+        "обозначай их зависимость от толщины продукта. Не записывай "
+        "несуществующие продукты в качестве имеющихся.\n"
+        "Исходный запрос пользователя:\n" + question[:2000] +
+        "\nПредыдущий ответ (черновик, не авторитетный источник):\n" +
+        last_answer[:4500]
+    )
+    try:
+        await message.bot.send_chat_action(message.chat.id, "typing")
+        recipe = await chef.recipe(source, prefs)
+        await storage.set_recipe(callback.from_user.id, recipe)
+        await storage.add_exchange(
+            callback.from_user.id, "Оформить последний ответ как техкарту",
+            "Создан структурированный рецепт: " + recipe["title"],
+        )
+        await send_recipe_card(
+            message, recipe, recipe_keyboard(recipe),
+            rich_enabled=settings.telegram_rich_recipe_cards,
+        )
+    except RecipeFormatError:
+        logger.warning("Failed to format conversation into recipe")
+        await send_text(message, "Карточка не прошла проверку. Текст прежнего совета "
+                        "сохранён; попробуем ещё раз по рецепту.", main_keyboard())
+    except Exception as exc:
+        logger.warning("Recipe conversion failed: %s", type(exc).__name__)
+        await send_text(message, "Сейчас не удалось оформить карточку. "
+                        "Ваши рецепты и настройки не потеряны.", main_keyboard())
 
 
 @router.callback_query()
