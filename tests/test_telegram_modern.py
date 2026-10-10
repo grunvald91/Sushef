@@ -77,6 +77,30 @@ async def test_recipe_card_html_fallback_without_duplicate_or_unsafe_tags():
     assert message.answer.await_args.kwargs["reply_markup"] is markup
 
 
+
+@pytest.mark.asyncio
+async def test_rich_api_bad_request_falls_back_to_safe_html(monkeypatch):
+    """Unsupported native rich method: exactly one standard Telegram fallback."""
+    import sushef.telegram_modern as modern
+
+    class UnsupportedRich(Exception):
+        pass
+
+    monkeypatch.setattr(modern, "TelegramBadRequest", UnsupportedRich)
+    bot = SimpleNamespace(send_rich_message=AsyncMock(side_effect=UnsupportedRich("unsupported")))
+    message = SimpleNamespace(
+        bot=bot, chat=SimpleNamespace(id=222, type="private"), answer=AsyncMock())
+    markup = recipe_keyboard(sample())
+    await send_recipe_card(message, sample(), markup)
+    assert bot.send_rich_message.await_count == 1
+    assert message.answer.await_count >= 1
+    rendered = message.answer.await_args.args[0]
+    assert "&lt;с любовью&gt;" in rendered
+    assert "<script>" not in rendered
+    assert message.answer.await_args.kwargs["parse_mode"] == "HTML"
+
+
+
 def test_short_ingredient_copy_button_not_truncated():
     kb = recipe_keyboard(sample())
     copy_button = next(
