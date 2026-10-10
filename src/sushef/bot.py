@@ -385,24 +385,24 @@ def recipe_keyboard(recipe: dict | None = None) -> InlineKeyboardMarkup:
         [("👨‍🍳 Готовим пошагово", "cook:start")],
         [("❤️ Сохранить рецепт", "recipe:save"), ("🛒 Список продуктов", "view:shop")],
         [("😋 Оценить результат", "view:rating")],
+        [("🏠 Главное меню", "view:main")],
     ]
-    # Bot API CopyTextButton is capped at 256 characters. Never silently
-    # truncate a long list: omit Copy if it would be incomplete.
+    markup = keyboard(rows)
     if recipe:
         entries = [
             str(i.get("name", "")) + " — " + str(i.get("amount", ""))
             for i in recipe.get("ingredients", []) if isinstance(i, dict)
         ]
         raw = "\n".join(entries)
+        # CopyTextButton is limited to 256 characters. Never truncate a list.
         if 1 <= len(raw) <= 256:
-            rows.append([("📋 Скопировать продукты", "recipe:copy_placeholder")])
-            markup = keyboard(rows + [[("🏠 Главное меню", "view:main")]])
-            markup.inline_keyboard[-2][0] = InlineKeyboardButton(
-                text="📋 Скопировать продукты", copy_text=CopyTextButton(text=raw))
-            return markup
-    rows.append([("🏠 Главное меню", "view:main")])
-    return keyboard(rows)
-
+            markup.inline_keyboard.insert(
+                -1, [InlineKeyboardButton(
+                    text="📋 Скопировать продукты",
+                    copy_text=CopyTextButton(text=raw),
+                )],
+            )
+    return markup
 
 def fermentation_keyboard() -> InlineKeyboardMarkup:
     return keyboard([
