@@ -11,7 +11,7 @@ from html import escape
 import logging
 
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
-from aiogram.types import InputRichMessage, InlineKeyboardMarkup, Message
+from aiogram.types import BotCommand, InputRichMessage, InlineKeyboardMarkup, Message
 
 from .chef import format_recipe
 from .telegram_format import telegram_chunks
@@ -114,4 +114,24 @@ async def show_chef_thinking(message: Message, *, enabled: bool = True) -> bool:
         return True
     except (TelegramAPIError, AttributeError) as exc:
         logger.debug("Temporary draft unavailable: %s", type(exc).__name__)
+        return False
+
+
+async def configure_bot_commands(bot) -> bool:
+    """Discoverable native bot command menu, without overwriting BotFather Mini App."""
+    commands = [
+        BotCommand(command="start", description="Добро пожаловать на кухню"),
+        BotCommand(command="menu", description="Главное меню Сушефа"),
+        BotCommand(command="recipes", description="Моя коллекция блюд"),
+        BotCommand(command="pantry", description="Продукты, которые есть дома"),
+        BotCommand(command="week", description="Моё меню на неделю"),
+        BotCommand(command="profile", description="Мои вкусы и стиль общения"),
+        BotCommand(command="memory", description="Кулинарная память"),
+        BotCommand(command="timers", description="Мои кухонные таймеры"),
+    ]
+    try:
+        await bot.set_my_commands(commands, language_code="ru")
+        return True
+    except (TelegramAPIError, AttributeError) as exc:
+        logger.info("Bot commands were not updated: %s", type(exc).__name__)
         return False
