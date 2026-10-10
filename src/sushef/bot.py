@@ -26,6 +26,7 @@ from .dish_process_cards_v2 import scale_source_ingredients
 from .config import Settings
 from .telegram_format import telegram_chunks
 from .telegram_modern import send_recipe_card, show_chef_thinking
+from .telegram_dialogue import send_dialogue
 from .conversation_quality import correct_egg_followup
 from .storage import Storage
 
@@ -1220,9 +1221,12 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
                     ai_text += "\n\nТехнологические справки:\n" + technique_context(related)
             answer = await chef.answer(mode, ai_text, preferences, history, context)
             await storage.add_exchange(user_id, text, answer)
-            await send_text(message, answer,
-                            cooking_keyboard() if mode == "cook" else
-                            fermentation_keyboard() if mode == "ferment" else main_keyboard())
+            await send_dialogue(
+                message, answer,
+                cooking_keyboard() if mode == "cook" else
+                fermentation_keyboard() if mode == "ferment" else main_keyboard(),
+                rich_enabled=settings.telegram_rich_recipe_cards,
+            )
     except (RecipeFormatError, WeeklyPlanError):
         logger.warning("Model returned malformed structured culinary response")
         await send_text(message, "Не удалось оформить рецепт или меню без ошибок. Попробуйте переформулировать запрос.", main_keyboard())
