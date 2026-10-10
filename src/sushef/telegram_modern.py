@@ -10,7 +10,7 @@ from __future__ import annotations
 from html import escape
 import logging
 
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.types import InputRichMessage, InlineKeyboardMarkup, Message
 
 from .chef import format_recipe
@@ -90,3 +90,28 @@ async def send_recipe_card(
             chunk, parse_mode="HTML",
             reply_markup=markup if index == len(chunks) - 1 else None,
         )
+
+
+async def show_chef_thinking(message: Message, *, enabled: bool = True) -> bool:
+    """Temporary Telegram draft while ClaudeHub prepares a full final answer.
+
+    Does NOT claim token-by-token streaming. A real, persistent answer always
+    follows through send_text/send_recipe_card. Draft failures don't fail AI.
+    """
+    if not enabled or message.chat.type != "private":
+        return False
+    draft_id = getattr(message, "message_id", None)
+    if type(draft_id) is not int or draft_id <= 0:
+        return False
+    try:
+        await message.bot.send_message_draft(
+            chat_id=message.chat.id,
+            message_thread_id=getattr(message, "message_thread_id", None),
+            draft_id=draft_id,
+            text="👨‍🍳 Подбираю вкусную идею именно для Вас…",
+            can_stop=False,
+        )
+        return True
+    except (TelegramAPIError, AttributeError) as exc:
+        logger.debug("Temporary draft unavailable: %s", type(exc).__name__)
+        return False
