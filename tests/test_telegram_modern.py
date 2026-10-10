@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from sushef.bot import recipe_keyboard
+from sushef.bot import cooking_keyboard, keyboard, recipe_keyboard
 from sushef.personalization import welcome_back
 from sushef.prompts import build_system
 from sushef.telegram_modern import (
@@ -136,3 +136,14 @@ def test_highly_personal_respect_without_false_memory():
     assert "подтверждённом профиле" in system
     assert "люблю лимонные нотки" in system
     assert "не выдумывай" in system.lower()
+
+
+
+def test_bot_api_10_3_disabled_previous_step_and_force_reply():
+    first = cooking_keyboard({"step_index": 0})
+    assert first.inline_keyboard[0][0].disabled is not None
+    assert first.inline_keyboard[0][0].callback_data is None
+    later = cooking_keyboard({"step_index": 1})
+    assert later.inline_keyboard[0][0].callback_data == "cook:previous"
+    custom = keyboard([[("Посмотреть примеры", "hello:styles")]], force_reply=True)
+    assert custom.force_reply is True
