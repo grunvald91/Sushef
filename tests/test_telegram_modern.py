@@ -108,6 +108,14 @@ async def test_native_draft_preview_is_only_temporary():
     assert kw["draft_id"] == 153
     assert kw["can_stop"] is False
     assert not await show_chef_thinking(message, enabled=False)
+    fake_bot.send_message_draft.reset_mock()
+    assert await show_chef_thinking(
+        message, mode="recipe", preferences={"address_form": "ты"})
+    assert "твой вкус" in fake_bot.send_message_draft.await_args.kwargs["text"]
+    fake_bot.send_message_draft.reset_mock()
+    assert await show_chef_thinking(
+        message, mode="rescue", preferences={"address_form": "вы"})
+    assert "помочь блюду" in fake_bot.send_message_draft.await_args.kwargs["text"]
 
 
 @pytest.mark.asyncio
