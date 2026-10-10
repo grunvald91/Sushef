@@ -829,7 +829,8 @@ async def inspect_photo(message: Message, storage: Storage, chef: Chef, settings
         return
     try:
         await message.bot.send_chat_action(message.chat.id, "typing")
-        await show_chef_thinking(message, enabled=settings.telegram_draft_preview)
+        await show_chef_thinking(message, enabled=settings.telegram_draft_preview,
+                                 mode=mode, preferences=preferences)
         stream = await message.bot.download(size)
         if stream is None or not hasattr(stream, "getvalue"):
             raise RuntimeError("Telegram не предоставил изображение")
