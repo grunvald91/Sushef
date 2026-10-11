@@ -9,7 +9,7 @@ from anthropic import AsyncAnthropic
 from .config import Settings
 from .prompts import RECIPE_JSON, build_system
 from .weekly import WEEKLY_JSON, normalize_weekly_plan
-from .timers import normalize_step_timers, suggested_timer
+from .timers import normalize_step_timers, normalize_step_overlaps, suggested_timer, suggested_overlap
 
 
 class RecipeFormatError(ValueError):
@@ -70,13 +70,18 @@ def normalize_recipe(text: str) -> dict[str, Any]:
             "step_index": index, "why": why.strip()[:240],
             "cue": cue.strip()[:180], "fix": fix.strip()[:240],
         })
+    step_timers = normalize_step_timers(data.get("step_timers"), len(steps))
+    step_overlaps = normalize_step_overlaps(
+        data.get("step_overlaps"), len(steps), step_timers
+    )
     return {
         "step_insights": insights,
         "chef_note": chef_note.strip()[:220],
         "title": title.strip(), "time_minutes": minutes, "servings": servings,
         "ingredients": clean_ingredients,
         "steps": [s[:1200] for s in steps],
-        "step_timers": normalize_step_timers(data.get("step_timers"), len(steps)),
+        "step_timers": step_timers,
+        "step_overlaps": step_overlaps,
         "safety_notes": [n[:400] for n in notes[:5]],
     }
 
@@ -111,6 +116,12 @@ def format_recipe(recipe: dict[str, Any]) -> str:
     }
     for index, step in enumerate(recipe.get("steps", []), 1):
         lines.append(f"{index}. {step}")
+        overlap = suggested_overlap(recipe, index - 1)
+        if overlap:
+            lines.append(
+                f"   🔄 Параллельно с таймером шага {overlap['while_step_index'] + 1}: "
+                f"{overlap['label']}."
+            )
         insight = insight_map.get(index - 1, {})
         reason = insight.get("why")
         if isinstance(reason, str) and reason:
