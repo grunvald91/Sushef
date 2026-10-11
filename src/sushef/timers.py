@@ -36,6 +36,51 @@ def normalize_step_timers(items: object, step_count: int) -> list[dict[str, Any]
     return cleaned
 
 
+def normalize_step_overlaps(
+    items: object, step_count: int, timers: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Keep only feasible references to an earlier step with a timer.
+
+    This validates the metadata, not the physical feasibility of a recipe:
+    ingredient prep times and cooking constraints still require a real plan.
+    """
+    if not isinstance(items, list):
+        return []
+    timer_indices = {timer["step_index"] for timer in timers}
+    cleaned: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for item in items[:20]:
+        if not isinstance(item, dict):
+            continue
+        index = item.get("step_index")
+        earlier = item.get("while_step_index")
+        label = item.get("label")
+        if (type(index) is not int or type(earlier) is not int
+                or not 0 <= earlier < index < step_count
+                or earlier not in timer_indices or index in seen):
+            continue
+        if not isinstance(label, str) or not 1 <= len(label.strip()) <= 120:
+            continue
+        seen.add(index)
+        cleaned.append({
+            "step_index": index,
+            "while_step_index": earlier,
+            "label": label.strip(),
+        })
+    return cleaned
+
+
+def suggested_overlap(recipe: dict, step_index: int) -> dict[str, Any] | None:
+    steps = recipe.get("steps", [])
+    if not isinstance(steps, list) or not 0 <= step_index < len(steps):
+        return None
+    timers = normalize_step_timers(recipe.get("step_timers", []), len(steps))
+    for item in normalize_step_overlaps(recipe.get("step_overlaps", []), len(steps), timers):
+        if item["step_index"] == step_index:
+            return item
+    return None
+
+
 def suggested_timer(recipe: dict, step_index: int) -> dict[str, Any] | None:
     steps = recipe.get("steps", [])
     if not isinstance(steps, list) or not 0 <= step_index < len(steps):

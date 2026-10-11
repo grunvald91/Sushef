@@ -11,7 +11,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from .chef import Chef, RecipeFormatError, format_recipe
-from .timers import TIMER_PRESETS, MAX_MINUTES, suggested_timer, timer_progress, timer_start_text
+from .timers import TIMER_PRESETS, MAX_MINUTES, suggested_timer, suggested_overlap, timer_progress, timer_start_text
 from .memory import MEMORY_KINDS, PROFILE_FIELDS, short_memory_context
 from .personalization import STYLE_LABELS, communication_summary, example, style_comparison, welcome_back
 from .fermentation import PROCESS_LABELS, fermentation_system_context, intake_text
@@ -500,11 +500,17 @@ def cooking_text(session: dict[str, Any]) -> str:
         return ("🎉 Мы дошли до подачи! Оцените аромат, вкус и готовность блюда. "
                 "Самое приятное — теперь можно собирать всех за столом.")
     hint = suggested_timer(recipe, index)
+    overlap = suggested_overlap(recipe, index)
+    overlap_note = (
+        f"\n\n🔄 Пока идёт таймер шага {overlap['while_step_index'] + 1}: "
+        f"{overlap['label']}."
+        if overlap else ""
+    )
     timer_note = (f"\n\n⏱ Рекомендуемый таймер: {hint['minutes']} мин — {hint['label']}."
                   if hint else
                   "\n\n⏱ При необходимости поставьте таймер вручную.")
     return (f"👨‍🍳 {recipe['title']}\nШаг {index + 1}/{len(steps)}:"
-            f"\n\n{steps[index]}" + timer_note +
+            f"\n\n{steps[index]}" + overlap_note + timer_note +
             "\nТаймер запускается по кнопке.\n\n"
             "Если нужна подсказка, просто напишите.")
 
