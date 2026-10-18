@@ -4,6 +4,7 @@ import logging
 from aiogram import Dispatcher
 
 from .bot import router
+from .inline_mode import router as inline_router
 from .chef import Chef
 from .config import load_settings
 from .telegram import create_bot
@@ -21,6 +22,7 @@ async def main() -> None:
     chef = Chef(settings)
     bot = create_bot(settings)
     dp = Dispatcher()
+    dp.include_router(inline_router)
     dp.include_router(router)
     timer_task = None
     try:

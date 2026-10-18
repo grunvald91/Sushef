@@ -143,6 +143,7 @@ async def configure_bot_commands(bot) -> bool:
         BotCommand(command="timers", description="Мои кухонные таймеры"),
         BotCommand(command="help", description="Инструкция: как пользоваться"),
         BotCommand(command="subscribe", description="Подписка за Telegram Stars"),
+        BotCommand(command="inline", description="Сушеф в любом чате"),
         BotCommand(command="support", description="Написать в службу поддержки"),
     ]
     try:

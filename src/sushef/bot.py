@@ -9,7 +9,7 @@ from typing import Any
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import BufferedInputFile, CallbackQuery, CopyTextButton, DisabledButton, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Message, PreCheckoutQuery, User
+from aiogram.types import BufferedInputFile, CallbackQuery, CopyTextButton, DisabledButton, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Message, PreCheckoutQuery, SwitchInlineQueryChosenChat, User
 
 from .chef import Chef, RecipeFormatError, format_recipe
 from .timers import TIMER_PRESETS, MAX_MINUTES, suggested_timer, timer_progress, timer_start_text
@@ -30,7 +30,7 @@ from .telegram_modern import send_recipe_card, show_chef_thinking
 from .telegram_dialogue import DraftStreamer, send_dialogue, culinary_answer_has_recipe, recipe_context_tag
 from .conversation_quality import correct_egg_followup
 from .storage import Storage
-from .support import GUIDE_TEXT, SUPPORT_PROMPT, open_tickets_text, reply_for_user, ticket_for_admin, ticket_from_admin_message
+from .support import GUIDE_TEXT, SUPPORT_PROMPT, inline_guide_text, open_tickets_text, reply_for_user, ticket_for_admin, ticket_from_admin_message
 from .billing import STARS_CURRENCY, checkout_error, format_until, invoice_payload, parse_payload, paywall_text, subscription_text, trial_offer_text
 
 logger = logging.getLogger(__name__)
@@ -163,6 +163,7 @@ def more_keyboard() -> InlineKeyboardMarkup:
         [("📚 Каталог протоколов", "protocol:list")],
         [("📅 План на неделю", "mode:plan"), ("🔔 Мои таймеры", "view:timers")],
         [("💬 Манера общения", "view:communication"), ("🥗 Профиль", "view:profile")],
+        [("🔎 Сушеф в любом чате", "view:inline")],
         [("⭐ Подписка", "view:subscription"), ("🛟 Поддержка", "support:new")],
         [("📖 Инструкция", "view:guide"), ("🏠 Главное меню", "view:main")],
     ])
@@ -889,6 +890,13 @@ async def start(message: Message, storage: Storage, settings: Settings) -> None:
     if await is_support_admin(message.from_user, storage, settings):
         await send_text(message, "🛟 Вы подключены как служба поддержки: новые обращения "
                         "будут приходить сюда. Открытые — /tickets.")
+    payload = (message.text or "").partition(" ")[2].strip()
+    if payload == "subscribe":
+        await send_subscription(message, message.from_user, storage, settings)
+        return
+    if payload == "inline":
+        await send_inline_guide(message, message.from_user, storage, settings)
+        return
     if not prefs.get("conversation_style") and not prefs.get("onboarding_skipped"):
         await send_text(
             message,
@@ -933,9 +941,17 @@ async def terms_command(message: Message, settings: Settings) -> None:
             "с момента оплаты; новая оплата продлевает текущий срок.\n"
             "• Подписка открывает запросы к кулинарному ИИ в пределах дневного лимита "
             f"({settings.daily_ai_limit} в сутки).\n"
+            "• Подписка открывает Сушефа в любом чате: `@имя_бота вопрос` (inline-режим, "
+            "только по подписке, пробные запросы на него не действуют).\n"
             "• Советы ИИ — кулинарные рекомендации, а не гарантия безопасности продукта.\n"
             "• Вопросы об оплате и возврате — /paysupport. Возврат Stars выполняется через Telegram.",
         )
+
+
+@router.message(Command("inline"))
+async def inline_command(message: Message, storage: Storage, settings: Settings) -> None:
+    if await private_only(message) and message.from_user:
+        await send_inline_guide(message, message.from_user, storage, settings)
 
 
 @router.message(Command("myid"))
@@ -981,6 +997,28 @@ async def refund_command(message: Message, storage: Storage, settings: Settings)
         return
     await storage.mark_star_refunded(charge_id)
     await send_text(message, f"↩️ Возвращено {payment['amount']} ⭐, срок подписки уменьшен на {payment['days']} дн.")
+
+
+async def send_inline_guide(message: Message, user: User, storage: Storage, settings: Settings) -> None:
+    """Как пользоваться Сушефом в любом чате; для оплативших — кнопка выбора чата."""
+    from .inline_mode import inline_allowed
+    me = await message.bot.me()
+    allowed = await inline_allowed(user, storage, settings)
+    await send_text(message, inline_guide_text(me.username, allowed=allowed,
+                                               price=settings.stars_price))
+    if allowed:
+        markup = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💬 Выбрать чат и спросить", style="primary",
+                                  switch_inline_query_chosen_chat=SwitchInlineQueryChosenChat(
+                                      query="", allow_user_chats=True, allow_group_chats=True,
+                                      allow_channel_chats=True))],
+            [InlineKeyboardButton(text="🔍 Попробовать здесь", switch_inline_query_current_chat="")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="view:main")],
+        ])
+        await message.answer("👇 Начните прямо сейчас:", reply_markup=markup)
+    else:
+        await message.answer("👇 Оформите подписку, и Сушеф будет помогать в любом чате:",
+                             reply_markup=subscription_keyboard(settings))
 
 
 async def send_subscription(message: Message, user: User, storage: Storage, settings: Settings) -> None:
@@ -1908,6 +1946,10 @@ async def button_clicked(callback: CallbackQuery, storage: Storage, settings: Se
         except Exception as exc:
             logger.warning("Support close notification failed: %s", type(exc).__name__)
         await send_text(message, f"✅ Обращение №{ticket_id} закрыто.")
+        return
+
+    if data == "view:inline":
+        await send_inline_guide(message, callback.from_user, storage, settings)
         return
 
     if data == "view:subscription":
