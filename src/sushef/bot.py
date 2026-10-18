@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import json
 import logging
+from time import time
 from decimal import Decimal
 from typing import Any
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import BufferedInputFile, CallbackQuery, CopyTextButton, DisabledButton, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, CopyTextButton, DisabledButton, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Message, PreCheckoutQuery, User
 
 from .chef import Chef, RecipeFormatError, format_recipe
 from .timers import TIMER_PRESETS, MAX_MINUTES, suggested_timer, timer_progress, timer_start_text
@@ -29,6 +30,8 @@ from .telegram_modern import send_recipe_card, show_chef_thinking
 from .telegram_dialogue import send_dialogue, culinary_answer_has_recipe, recipe_context_tag
 from .conversation_quality import correct_egg_followup
 from .storage import Storage
+from .support import GUIDE_TEXT, SUPPORT_PROMPT, open_tickets_text, reply_for_user, ticket_for_admin, ticket_from_admin_message
+from .billing import STARS_CURRENCY, checkout_error, format_until, invoice_payload, parse_payload, paywall_text, subscription_text
 
 logger = logging.getLogger(__name__)
 router = Router(name="telegram")
@@ -50,6 +53,7 @@ def keyboard(rows: list[list[tuple[str, str]]], *, force_reply: bool = False) ->
         "cook:next": "success", "hello:start": "primary",
         "recipe:save": "success", "hello:save:warm": "success",
         "delete:confirm": "danger", "pantry:clear": "danger",
+        "pay:buy": "primary",
     }
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -71,6 +75,7 @@ def main_keyboard() -> InlineKeyboardMarkup:
         [("👨‍🍳 Готовим вместе", "cook:start"), ("🆘 Спасти блюдо", "mode:rescue")],
         [("📚 Моя кухня", "view:library"), ("🌍 Кухни мира", "view:cuisines")],
         [("🧪 Секреты мастерства", "view:techniques"), ("🥗 Мой вкус", "view:profile")],
+        [("📖 Инструкция", "view:guide"), ("🛟 Поддержка", "support:new")],
         [("✨ Все возможности", "view:more")],
     ])
 
@@ -91,8 +96,113 @@ def more_keyboard() -> InlineKeyboardMarkup:
         [("📚 Каталог протоколов", "protocol:list")],
         [("📅 План на неделю", "mode:plan"), ("🔔 Мои таймеры", "view:timers")],
         [("💬 Манера общения", "view:communication"), ("🥗 Профиль", "view:profile")],
-        [("🏠 Главное меню", "view:main")],
+        [("⭐ Подписка", "view:subscription"), ("🛟 Поддержка", "support:new")],
+        [("📖 Инструкция", "view:guide"), ("🏠 Главное меню", "view:main")],
     ])
+
+
+def subscription_keyboard(settings: Settings) -> InlineKeyboardMarkup:
+    return keyboard([
+        [(f"⭐ Подписка на {settings.subscription_days} дн. за {settings.stars_price} ⭐", "pay:buy")],
+        [("🛟 Вопрос об оплате", "support:new"), ("🏠 Меню", "view:main")],
+    ])
+
+
+def support_admin_keyboard(ticket_id: int) -> InlineKeyboardMarkup:
+    return keyboard([[("✍️ Ответить", f"support:reply:{ticket_id}"),
+                      ("✅ Закрыть", f"support:close:{ticket_id}")]])
+
+
+def support_user_keyboard() -> InlineKeyboardMarkup:
+    return keyboard([[("✍️ Ответить поддержке", "support:new")],
+                     [("🏠 Главное меню", "view:main")]])
+
+
+async def is_support_admin(user: User, storage: Storage, settings: Settings) -> bool:
+    """Сотрудник поддержки: ID из настроек или владелец SUPPORT_ADMIN_USERNAME.
+
+    Username закрепляется в БД за первым написавшим аккаунтом, поэтому
+    смена владельца username не передаёт доступ к обращениям.
+    """
+    if user.id in settings.support_admin_id_set:
+        return True
+    username = settings.support_admin_username.lstrip("@").lower()
+    if username and user.username and user.username.lower() == username:
+        if await storage.register_support_admin(user.id, user.username):
+            return True
+    return user.id in await storage.support_admin_ids()
+
+
+async def payment_exempt(user: User, storage: Storage, settings: Settings) -> bool:
+    return user.id in settings.payment_exempt_id_set or await is_support_admin(user, storage, settings)
+
+
+async def reserve_ai_request(message: Message, user: User, storage: Storage,
+                             settings: Settings, limit_text: str) -> bool:
+    """Подписка/пробные запросы + дневная квота. Сообщает пользователю об отказе."""
+    status = await storage.use_ai_request(
+        user.id, daily_limit=settings.daily_ai_limit,
+        trial_limit=settings.free_trial_requests,
+        exempt=await payment_exempt(user, storage, settings),
+        payments_enabled=settings.payments_enabled,
+    )
+    if status == "payment_required":
+        await send_text(message, paywall_text(price=settings.stars_price,
+                                              days=settings.subscription_days,
+                                              trial_limit=settings.free_trial_requests),
+                        subscription_keyboard(settings))
+        return False
+    if status == "daily_limit":
+        await send_text(message, limit_text, main_keyboard())
+        return False
+    return True
+
+
+async def notify_support(message: Message, storage: Storage, settings: Settings,
+                         ticket_id: int, text: str) -> int:
+    """Разослать обращение сотрудникам; вернуть число успешных доставок."""
+    user = message.from_user
+    recipients = set(settings.support_admin_id_set) | await storage.support_admin_ids()
+    card = ticket_for_admin(ticket_id, user.id, user.full_name, user.username, text)
+    delivered = 0
+    chunks = telegram_chunks(card)
+    for admin_id in sorted(recipients):
+        try:
+            for i, chunk in enumerate(chunks):
+                await message.bot.send_message(
+                    admin_id, chunk, parse_mode="HTML",
+                    reply_markup=support_admin_keyboard(ticket_id) if i == len(chunks) - 1 else None,
+                )
+            delivered += 1
+        except Exception as exc:
+            # Сотрудник ещё не открыл бота или заблокировал его — обращение остаётся в БД.
+            logger.warning("Support notification failed: %s", type(exc).__name__)
+    return delivered
+
+
+async def deliver_support_reply(message: Message, storage: Storage, ticket_id: int, text: str) -> None:
+    try:
+        target = await storage.add_support_reply(ticket_id, text)
+    except ValueError as exc:
+        await send_text(message, "Ответ не отправлен: " + str(exc))
+        return
+    if target is None:
+        await send_text(message, f"Обращение №{ticket_id} не найдено.")
+        return
+    chunks = telegram_chunks(reply_for_user(text))
+    try:
+        for i, chunk in enumerate(chunks):
+            await message.bot.send_message(
+                target["chat_id"], chunk, parse_mode="HTML",
+                reply_markup=support_user_keyboard() if i == len(chunks) - 1 else None,
+            )
+    except Exception as exc:
+        logger.warning("Support reply delivery failed: %s", type(exc).__name__)
+        await send_text(message, f"⚠️ Ответ сохранён в обращении №{ticket_id}, но Telegram "
+                        "не доставил его: возможно, пользователь заблокировал бота.")
+        return
+    await send_text(message, f"✅ Ответ по обращению №{ticket_id} отправлен.",
+                    support_admin_keyboard(ticket_id))
 
 
 def welcome_keyboard() -> InlineKeyboardMarkup:
@@ -652,11 +762,14 @@ async def private_only(message: Message) -> bool:
 
 
 @router.message(CommandStart())
-async def start(message: Message, storage: Storage) -> None:
+async def start(message: Message, storage: Storage, settings: Settings) -> None:
     if not await private_only(message) or not message.from_user:
         return
     user = await storage.get_user(message.from_user.id)
     prefs = user["preferences"]
+    if await is_support_admin(message.from_user, storage, settings):
+        await send_text(message, "🛟 Вы подключены как служба поддержки: новые обращения "
+                        "будут приходить сюда. Открытые — /tickets.")
     if not prefs.get("conversation_style") and not prefs.get("onboarding_skipped"):
         await send_text(
             message,
@@ -670,14 +783,137 @@ async def start(message: Message, storage: Storage) -> None:
         await send_text(message, welcome_back(prefs), main_keyboard())
 
 
-@router.message(Command("menu", "help"))
+@router.message(Command("help", "guide"))
+async def guide_command(message: Message) -> None:
+    if await private_only(message):
+        await send_text(message, GUIDE_TEXT, main_keyboard())
+
+
+@router.message(Command("support", "paysupport"))
+async def support_command(message: Message, storage: Storage) -> None:
+    if not await private_only(message) or not message.from_user:
+        return
+    await storage.set_mode(message.from_user.id, "support:write")
+    await send_text(message, SUPPORT_PROMPT)
+
+
+@router.message(Command("subscribe", "premium"))
+async def subscribe_command(message: Message, storage: Storage, settings: Settings) -> None:
+    if not await private_only(message) or not message.from_user:
+        return
+    await send_subscription(message, message.from_user, storage, settings)
+
+
+@router.message(Command("terms"))
+async def terms_command(message: Message, settings: Settings) -> None:
+    if await private_only(message):
+        await send_text(
+            message,
+            "📜 **Условия подписки Сушефа**\n\n"
+            f"• Подписка стоит {settings.stars_price} ⭐ и действует {settings.subscription_days} дней "
+            "с момента оплаты; новая оплата продлевает текущий срок.\n"
+            "• Подписка открывает запросы к кулинарному ИИ в пределах дневного лимита "
+            f"({settings.daily_ai_limit} в сутки).\n"
+            "• Советы ИИ — кулинарные рекомендации, а не гарантия безопасности продукта.\n"
+            "• Вопросы об оплате и возврате — /paysupport. Возврат Stars выполняется через Telegram.",
+        )
+
+
+@router.message(Command("myid"))
+async def my_id_command(message: Message) -> None:
+    if await private_only(message) and message.from_user:
+        await send_text(message, f"🪪 Ваш Telegram ID: {message.from_user.id}")
+
+
+@router.message(Command("tickets"))
+async def tickets_command(message: Message, storage: Storage, settings: Settings) -> None:
+    if not await private_only(message) or not message.from_user:
+        return
+    if not await is_support_admin(message.from_user, storage, settings):
+        await send_text(message, "Команда доступна только службе поддержки.")
+        return
+    tickets = await storage.open_support_tickets()
+    rows = [[(f"✍️ №{t['id']}", f"support:reply:{t['id']}"),
+             (f"✅ Закрыть №{t['id']}", f"support:close:{t['id']}")] for t in tickets]
+    await send_text(message, open_tickets_text(tickets), keyboard(rows) if rows else None)
+
+
+@router.message(Command("refund"))
+async def refund_command(message: Message, storage: Storage, settings: Settings) -> None:
+    if not await private_only(message) or not message.from_user:
+        return
+    if not await is_support_admin(message.from_user, storage, settings):
+        await send_text(message, "Команда доступна только службе поддержки.")
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    charge_id = parts[1].strip() if len(parts) == 2 else ""
+    payment = await storage.star_payment(charge_id) if charge_id else None
+    if payment is None:
+        await send_text(message, "Укажите идентификатор платежа: /refund <telegram_payment_charge_id>.")
+        return
+    if payment["status"] != "paid":
+        await send_text(message, "Этот платёж уже возвращён.")
+        return
+    try:
+        await message.bot.refund_star_payment(payment["user_id"], charge_id)
+    except Exception as exc:
+        logger.warning("Star refund failed: %s", type(exc).__name__)
+        await send_text(message, "Telegram не выполнил возврат. Проверьте идентификатор и попробуйте позже.")
+        return
+    await storage.mark_star_refunded(charge_id)
+    await send_text(message, f"↩️ Возвращено {payment['amount']} ⭐, срок подписки уменьшен на {payment['days']} дн.")
+
+
+async def send_subscription(message: Message, user: User, storage: Storage, settings: Settings) -> None:
+    exempt = await payment_exempt(user, storage, settings)
+    text = subscription_text(
+        await storage.subscription(user.id), price=settings.stars_price,
+        days=settings.subscription_days, trial_limit=settings.free_trial_requests,
+        exempt=exempt, payments_enabled=settings.payments_enabled, now_ts=int(time()),
+    )
+    paid = settings.payments_enabled and not exempt
+    await send_text(message, text, subscription_keyboard(settings) if paid else main_keyboard())
+
+
+@router.pre_checkout_query()
+async def pre_checkout(query: PreCheckoutQuery, settings: Settings) -> None:
+    """Telegram ждёт ответа до 10 секунд; проверяем только сам счёт, без ИИ."""
+    error = checkout_error(query.invoice_payload, query.currency, query.total_amount,
+                           user_id=query.from_user.id, price=settings.stars_price,
+                           days=settings.subscription_days)
+    if not settings.payments_enabled:
+        error = "Оплата сейчас не принимается."
+    await query.answer(ok=error is None, error_message=error)
+
+
+@router.message(F.successful_payment)
+async def successful_payment(message: Message, storage: Storage, settings: Settings) -> None:
+    payment = message.successful_payment
+    if not message.from_user or payment is None or payment.currency != STARS_CURRENCY:
+        return
+    parsed = parse_payload(payment.invoice_payload)
+    days = parsed[0] if parsed else settings.subscription_days
+    result = await storage.record_star_payment(
+        message.from_user.id, payment.telegram_payment_charge_id,
+        payment.provider_payment_charge_id or "", payment.total_amount, payment.currency, days,
+    )
+    await storage.set_mode(message.from_user.id, "ask")
+    await send_text(
+        message,
+        "⭐ Благодарю! Подписка активна до " + format_until(result["paid_until_ts"]) +
+        ".\nС возвращением к плите — что приготовим? 🍲",
+        main_keyboard(),
+    )
+
+
+@router.message(Command("menu"))
 async def help_menu(message: Message) -> None:
     if await private_only(message):
         await send_text(
             message,
             "👨‍🍳 Сушеф поможет придумать рецепт, спасти блюдо, составить меню "
             "и провести Вас по шагам приготовления.\n\n"
-            "Команды: /start, /menu, /help, /profile, /recipes, /memory, /remember, /export_my_data, /timers, /pantry, /week, /ferment, /reset, /privacy, /delete_me.",
+            "Команды: /start, /menu, /help, /profile, /recipes, /memory, /remember, /export_my_data, /timers, /pantry, /week, /ferment, /subscribe, /support, /reset, /privacy, /delete_me.",
             main_keyboard(),
         )
 
@@ -793,13 +1029,15 @@ async def privacy(message: Message) -> None:
             "🔒 Для работы сохраняются Ваш Telegram ID, выбранные настройки, "
             "до 40 последних реплик диалога, автоматический архив рецептов, избранное, "
             "подтверждённые и ожидающие подтверждения заметки, оценки блюд, продукты, "
-            "недельное меню, таймеры и время их срабатывания, партии ферментации, их замеры и шаги приготовления. "
+            "недельное меню, таймеры и время их срабатывания, партии ферментации, их замеры и шаги приготовления, обращения в поддержку, "
+            "срок подписки и платежи Telegram Stars. "
             "Запросы, история диалога и указанные предпочтения передаются провайдеру ClaudeHub "
             "для генерации ответа. Никаких сторонних рекламных рассылок бот не делает.\n\n"
             "/reset — очистить только диалог; рецепты, профиль и память останутся.\n"
             "/memory — просмотр и удаление подтверждённых заметок.\n"
             "/export_my_data — скачать все личные записи.\n"
-            "/delete_me — удалить данные из рабочей базы (резервные копии имеют отдельный срок хранения).\n"
+            "/delete_me — удалить данные из рабочей базы (резервные копии имеют отдельный срок хранения). "
+            "Срок подписки и записи о платежах Stars сохраняются для возвратов и учёта.\n"
             "Не отправляйте в чат пароли и другую чувствительную информацию.",
         )
 
@@ -826,8 +1064,8 @@ async def inspect_photo(message: Message, storage: Storage, chef: Chef, settings
     if size.file_size and size.file_size > settings.max_photo_bytes:
         await send_text(message, "Фотография слишком большая. Пришлите снимок меньшего размера.")
         return
-    if not await storage.use_quota(message.from_user.id, settings.daily_ai_limit):
-        await send_text(message, "На сегодня лимит запросов к ИИ исчерпан.")
+    if not await reserve_ai_request(message, message.from_user, storage, settings,
+                                    "На сегодня лимит запросов к ИИ исчерпан."):
         return
     try:
         await message.bot.send_chat_action(message.chat.id, "typing")
@@ -878,6 +1116,40 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
 
     user = await storage.get_user(user_id)
     mode = user["mode"]
+
+    replied = getattr(message, "reply_to_message", None)
+    reply_ticket = (ticket_from_admin_message(replied.text)
+                    if replied and replied.from_user and replied.from_user.id == message.bot.id
+                    else None)
+    if mode.startswith("support:reply:") or reply_ticket is not None:
+        if await is_support_admin(message.from_user, storage, settings):
+            ticket_id = reply_ticket if reply_ticket is not None else int(mode.rsplit(":", 1)[1])
+            if mode.startswith("support:reply:"):
+                await storage.set_mode(user_id, "ask")
+            await deliver_support_reply(message, storage, ticket_id, text)
+            return
+        if mode.startswith("support:reply:"):
+            await storage.set_mode(user_id, "ask")
+            mode = "ask"
+
+    if mode == "support:write":
+        try:
+            ticket_id = await storage.add_support_message(
+                user_id, message.chat.id, text, daily_limit=settings.support_daily_limit)
+        except ValueError as exc:
+            await send_text(message, "Сообщение не отправлено: " + str(exc) + ". Попробуйте ещё раз или /cancel.")
+            return
+        await storage.set_mode(user_id, "ask")
+        delivered = await notify_support(message, storage, settings, ticket_id, text)
+        await send_text(
+            message,
+            (f"✅ Обращение №{ticket_id} передано в поддержку. Ответ придёт в этот чат."
+             if delivered else
+             f"✅ Обращение №{ticket_id} сохранено. Поддержка ответит в этот чат, как только освободится."),
+            main_keyboard(),
+        )
+        return
+
     preferences = dict(user["preferences"])
     feedback = await storage.recent_feedback(user_id)
     if feedback:
@@ -1086,8 +1358,9 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
             await send_text(message, correction, main_keyboard())
             return
 
-    if not await storage.use_quota(user_id, settings.daily_ai_limit):
-        await send_text(message, "На сегодня лимит обращений к ИИ исчерпан. Завтра (по UTC) снова сможем творить вкусное! 🍲")
+    if not await reserve_ai_request(
+            message, message.from_user, storage, settings,
+            "На сегодня лимит обращений к ИИ исчерпан. Завтра (по UTC) снова сможем творить вкусное! 🍲"):
         return
 
     try:
@@ -1280,9 +1553,9 @@ async def convert_dialogue_to_recipe(
                         "Давайте уточним продукты и я всё оформлю.",
                         keyboard([[("🥘 Создать рецепт", "mode:recipe")]]))
         return
-    if not await storage.use_quota(callback.from_user.id, settings.daily_ai_limit):
-        await send_text(message, "На сегодня лимит ИИ-оформлений исчерпан. "
-                        "Сам текст рецепта останется в истории.", main_keyboard())
+    if not await reserve_ai_request(message, callback.from_user, storage, settings,
+                                    "На сегодня лимит ИИ-оформлений исчерпан. "
+                                    "Сам текст рецепта останется в истории."):
         return
     prefs = (await storage.get_user(callback.from_user.id))["preferences"]
     source = (
@@ -1320,7 +1593,7 @@ async def convert_dialogue_to_recipe(
 
 
 @router.callback_query()
-async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
+async def button_clicked(callback: CallbackQuery, storage: Storage, settings: Settings) -> None:
     if not callback.from_user or not isinstance(callback.message, Message):
         await callback.answer()
         return
@@ -1331,6 +1604,59 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
     await callback.answer()
     user_id = callback.from_user.id
     data = callback.data or ""
+
+    if data == "view:guide":
+        await send_text(message, GUIDE_TEXT, main_keyboard())
+        return
+
+    if data == "support:new":
+        await storage.set_mode(user_id, "support:write")
+        await send_text(message, SUPPORT_PROMPT)
+        return
+
+    if data.startswith(("support:reply:", "support:close:")):
+        _, action, raw_id = data.split(":", 2)
+        if not raw_id.isdecimal() or not await is_support_admin(callback.from_user, storage, settings):
+            return
+        ticket_id = int(raw_id)
+        if action == "reply":
+            await storage.set_mode(user_id, "support:reply:" + raw_id)
+            await send_text(message, f"✍️ Напишите ответ по обращению №{ticket_id} одним сообщением. "
+                            "Отмена — /cancel.")
+            return
+        closed = await storage.close_support_ticket(ticket_id)
+        if closed is None:
+            await send_text(message, f"Обращение №{ticket_id} уже закрыто или не найдено.")
+            return
+        try:
+            await message.bot.send_message(
+                closed["chat_id"],
+                f"✅ Обращение №{ticket_id} закрыто. Если вопрос остался — просто напишите в поддержку снова.",
+                reply_markup=support_user_keyboard(),
+            )
+        except Exception as exc:
+            logger.warning("Support close notification failed: %s", type(exc).__name__)
+        await send_text(message, f"✅ Обращение №{ticket_id} закрыто.")
+        return
+
+    if data == "view:subscription":
+        await send_subscription(message, callback.from_user, storage, settings)
+        return
+
+    if data == "pay:buy":
+        if not settings.payments_enabled or await payment_exempt(callback.from_user, storage, settings):
+            await send_subscription(message, callback.from_user, storage, settings)
+            return
+        await message.answer_invoice(
+            title=f"Сушеф: подписка на {settings.subscription_days} дней",
+            description="Рецепты, ответы шефа, спасение блюд и меню на неделю "
+                        f"на {settings.subscription_days} дней.",
+            payload=invoice_payload(user_id, settings.subscription_days),
+            currency=STARS_CURRENCY,
+            prices=[LabeledPrice(label=f"Подписка на {settings.subscription_days} дней",
+                                 amount=settings.stars_price)],
+        )
+        return
 
     if data == "view:library":
         await send_text(message, "📚 Здесь живёт Ваша кулинарная история: сохранённые блюда, "

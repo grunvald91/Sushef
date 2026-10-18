@@ -118,7 +118,7 @@ async def test_ai_question_in_ordinary_ask_mode_really_calls_rich_dialogue():
     message = SimpleNamespace(
         text="У меня горбуша и овощи. Как вкусно запечь кусочками?",
         chat=SimpleNamespace(id=89, type="private"),
-        from_user=SimpleNamespace(id=89),
+        from_user=SimpleNamespace(id=89, username=None),
         message_id=100,
         answer=AsyncMock(), bot=bot,
     )
@@ -131,13 +131,17 @@ async def test_ai_question_in_ordinary_ask_mode_really_calls_rich_dialogue():
         personal_memories=AsyncMock(return_value=[]),
         get_history=AsyncMock(return_value=[]),
         technique_matches=AsyncMock(return_value=[]),
-        use_quota=AsyncMock(return_value=True),
+        use_ai_request=AsyncMock(return_value="ok"),
+        support_admin_ids=AsyncMock(return_value=set()),
         add_exchange=AsyncMock(),
     )
     chef = SimpleNamespace(answer=AsyncMock(return_value=FISH_ANSWER))
     settings = SimpleNamespace(
         max_input_chars=3500, daily_ai_limit=25,
         telegram_draft_preview=False, telegram_rich_recipe_cards=True,
+        support_admin_id_set=frozenset(), payment_exempt_id_set=frozenset(),
+        support_admin_username="grunvald", payments_enabled=True,
+        free_trial_requests=10, stars_price=100, subscription_days=30,
     )
     await text_message(message, storage, chef, settings)
     chef.answer.assert_awaited_once()
@@ -163,7 +167,7 @@ async def test_free_chat_recipe_conversion_uses_own_last_answer_not_generic_prom
     previous_question = "Как запечь горбушу кусочками с лимоном и брокколи?"
     callback = SimpleNamespace(
         answer=AsyncMock(),
-        from_user=SimpleNamespace(id=89),
+        from_user=SimpleNamespace(id=89, username=None),
         data="dialogue:recipe:" + recipe_context_tag(previous_question),
         message=SimpleNamespace(
             chat=SimpleNamespace(id=89, type="private"),
@@ -177,7 +181,8 @@ async def test_free_chat_recipe_conversion_uses_own_last_answer_not_generic_prom
     ]
     storage = SimpleNamespace(
         get_history=AsyncMock(return_value=history),
-        use_quota=AsyncMock(return_value=True),
+        use_ai_request=AsyncMock(return_value="ok"),
+        support_admin_ids=AsyncMock(return_value=set()),
         get_user=AsyncMock(return_value={"preferences": {"likes": "лимон"}}),
         set_recipe=AsyncMock(),
         add_exchange=AsyncMock(),
@@ -189,7 +194,12 @@ async def test_free_chat_recipe_conversion_uses_own_last_answer_not_generic_prom
         "step_timers": [], "step_insights": [], "safety_notes": [],
     }
     chef = SimpleNamespace(recipe=AsyncMock(return_value=recipe))
-    settings = SimpleNamespace(daily_ai_limit=25, telegram_rich_recipe_cards=True)
+    settings = SimpleNamespace(
+        daily_ai_limit=25, telegram_rich_recipe_cards=True,
+        support_admin_id_set=frozenset(), payment_exempt_id_set=frozenset(),
+        support_admin_username="grunvald", payments_enabled=True,
+        free_trial_requests=10, stars_price=100, subscription_days=30,
+    )
     await convert_dialogue_to_recipe(callback, storage, chef, settings)
     chef.recipe.assert_awaited_once()
     prompt = chef.recipe.await_args.args[0]
@@ -206,7 +216,7 @@ async def test_old_recipe_button_cannot_transform_unrelated_new_chat(monkeypatch
     question = "Горбуша с лимоном?"
     callback = SimpleNamespace(
         answer=AsyncMock(),
-        from_user=SimpleNamespace(id=89),
+        from_user=SimpleNamespace(id=89, username=None),
         data="dialogue:recipe:" + recipe_context_tag("старый вопрос"),
         message=SimpleNamespace(
             chat=SimpleNamespace(id=89, type="private"),

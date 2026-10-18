@@ -141,6 +141,9 @@ async def configure_bot_commands(bot) -> bool:
         BotCommand(command="profile", description="Мои вкусы и стиль общения"),
         BotCommand(command="memory", description="Кулинарная память"),
         BotCommand(command="timers", description="Мои кухонные таймеры"),
+        BotCommand(command="help", description="Инструкция: как пользоваться"),
+        BotCommand(command="subscribe", description="Подписка за Telegram Stars"),
+        BotCommand(command="support", description="Написать в службу поддержки"),
     ]
     try:
         await bot.set_my_commands(commands, language_code="ru")

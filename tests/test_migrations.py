@@ -25,8 +25,10 @@ def test_fresh_db_alembic_builds_memory_and_archive_tables(tmp_path):
         "SELECT name FROM sqlite_master WHERE type='table'"
     )}
     assert {"users", "personal_memories", "recipe_archive",
-            "fermentation_batches", "cuisine_recipes", "alembic_version"}.issubset(tables)
-    assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0005_prod_cards"
+            "fermentation_batches", "cuisine_recipes", "alembic_version",
+            "support_tickets", "support_messages", "support_admins",
+            "subscriptions", "star_payments"}.issubset(tables)
+    assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0006_support_billing"
     assert con.execute("SELECT COUNT(*) FROM cuisine_recipes").fetchone()[0] >= 23
     assert con.execute("SELECT COUNT(*) FROM culinary_techniques").fetchone()[0] == 8
     assert con.execute("SELECT COUNT(*) FROM dish_process_cards").fetchone()[0] == 4
@@ -84,7 +86,7 @@ def test_timers_table_exists_after_upgrade_and_upgrade_is_idempotent(tmp_path):
     upgrade(path)
     con = sqlite3.connect(path)
     assert con.execute("SELECT count(*) FROM cooking_timers").fetchone()[0] == 1
-    assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0005_prod_cards"
+    assert con.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0006_support_billing"
     con.close()
 
 

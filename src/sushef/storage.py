@@ -5,11 +5,11 @@ from time import time
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Integer, cast, delete, select, text, update
+from sqlalchemy import Integer, cast, delete, func, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from .models import Base, CuisineRecipe, CulinaryTechnique, DishProcessCard, Conversation, CookingSession, CookingTimer, Favorite, FermentationBatch, FermentationReading, PantryItem, PersonalMemory, RecipeArchive, RecipeFeedback, User, WeeklyPlan
+from .models import Base, CuisineRecipe, CulinaryTechnique, DishProcessCard, Conversation, CookingSession, CookingTimer, Favorite, FermentationBatch, FermentationReading, PantryItem, PersonalMemory, RecipeArchive, RecipeFeedback, StarPayment, Subscription, SupportAdmin, SupportMessage, SupportTicket, User, WeeklyPlan
 from .timers import MAX_ACTIVE_TIMERS, MAX_MINUTES, MIN_MINUTES
 from .cuisine_catalog import CUISINES, RECIPES, as_row, validate_seed
 from .technique_catalog import TECHNIQUES, CATEGORIES, SEARCH_TRIGGERS, as_row as technique_as_row, validate_techniques
@@ -211,7 +211,7 @@ class Storage:
     async def close(self) -> None:
         await self.engine.dispose()
 
-    async def verify_schema_revision(self, required: str = "0005_prod_cards") -> None:
+    async def verify_schema_revision(self, required: str = "0006_support_billing") -> None:
         """Fail closed when migrations were skipped or the DB is incompatible."""
         try:
             async with self.engine.connect() as conn:
@@ -421,6 +421,10 @@ class Storage:
             await db.execute(delete(RecipeFeedback).where(RecipeFeedback.user_id == user_id))
             await db.execute(delete(RecipeArchive).where(RecipeArchive.user_id == user_id))
             await db.execute(delete(PersonalMemory).where(PersonalMemory.user_id == user_id))
+            # Обращения удаляются; оплаченный доступ и платёжные записи Stars
+            # остаются для возвратов и учёта (см. /privacy).
+            await db.execute(delete(SupportMessage).where(SupportMessage.user_id == user_id))
+            await db.execute(delete(SupportTicket).where(SupportTicket.user_id == user_id))
             await db.execute(delete(User).where(User.id == user_id))
             await db.commit()
 
@@ -932,6 +936,9 @@ class Storage:
             batches = await rows_for(FermentationBatch)
             readings = await rows_for(FermentationReading)
             timers = await rows_for(CookingTimer)
+            support = await rows_for(SupportMessage)
+            payments = await rows_for(StarPayment)
+            subscription = await db.get(Subscription, user_id)
             cooking = await db.get(CookingSession, user_id)
             weekly = await db.get(WeeklyPlan, user_id)
             return {
@@ -970,4 +977,191 @@ class Storage:
                      "ph": r.ph, "note": r.note, "observed_at": str(r.observed_at)}
                     for r in readings
                 ],
+                "support_messages": [
+                    {"ticket_id": m.ticket_id, "sender": m.sender, "text": m.text,
+                     "created_at": str(m.created_at)} for m in support
+                ],
+                "subscription": {"paid_until_ts": subscription.paid_until_ts,
+                                 "trial_used": subscription.trial_used}
+                                if subscription else None,
+                "star_payments": [
+                    {"amount": p.amount, "currency": p.currency, "days": p.days,
+                     "status": p.status, "created_at": str(p.created_at)} for p in payments
+                ],
             }
+
+    # --- Служба поддержки -------------------------------------------------
+
+    async def register_support_admin(self, user_id: int, username: str) -> bool:
+        """Закрепить сотрудника по username, только если ещё никто не закреплён.
+
+        Первый владелец username остаётся единственным: если username позже
+        перейдёт к другому человеку, тот не получит доступ к обращениям.
+        """
+        async with self.sessions() as db:
+            if await db.get(SupportAdmin, user_id):
+                return True
+            if await db.scalar(select(SupportAdmin.user_id).limit(1)) is not None:
+                return False
+            db.add(SupportAdmin(user_id=user_id, username=username[:64]))
+            await db.commit()
+            return True
+
+    async def support_admin_ids(self) -> set[int]:
+        async with self.sessions() as db:
+            return set(await db.scalars(select(SupportAdmin.user_id)))
+
+    async def add_support_message(self, user_id: int, chat_id: int, text: str,
+                                  *, daily_limit: int) -> int:
+        """Добавить сообщение пользователя в его открытое обращение (или создать новое)."""
+        text = text.strip()
+        if not text:
+            raise ValueError("пустое сообщение")
+        if len(text) > 3000:
+            raise ValueError("сообщение длиннее 3000 символов")
+        day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        async with self.sessions() as db:
+            sent_today = await db.scalar(select(func.count(SupportMessage.id)).where(
+                SupportMessage.user_id == user_id, SupportMessage.sender == "user",
+                SupportMessage.created_at >= day_start))
+            if sent_today >= daily_limit:
+                raise ValueError("на сегодня достигнут лимит обращений, попробуйте завтра")
+            ticket = await db.scalar(select(SupportTicket).where(
+                SupportTicket.user_id == user_id, SupportTicket.status == "open"
+            ).order_by(SupportTicket.id.desc()).limit(1))
+            if ticket is None:
+                ticket = SupportTicket(user_id=user_id, chat_id=chat_id, status="open")
+                db.add(ticket)
+                await db.flush()
+            ticket.chat_id = chat_id
+            ticket.updated_at = datetime.now(timezone.utc)
+            db.add(SupportMessage(ticket_id=ticket.id, user_id=user_id, sender="user", text=text))
+            await db.commit()
+            return ticket.id
+
+    async def add_support_reply(self, ticket_id: int, text: str) -> dict[str, int] | None:
+        """Сохранить ответ поддержки; вернуть адресата. Закрытое обращение снова открывается."""
+        text = text.strip()
+        if not text or len(text) > 3500:
+            raise ValueError("ответ должен содержать от 1 до 3500 символов")
+        async with self.sessions() as db:
+            ticket = await db.get(SupportTicket, ticket_id)
+            if ticket is None:
+                return None
+            ticket.status = "open"
+            ticket.updated_at = datetime.now(timezone.utc)
+            db.add(SupportMessage(ticket_id=ticket.id, user_id=ticket.user_id,
+                                  sender="support", text=text))
+            await db.commit()
+            return {"ticket_id": ticket.id, "user_id": ticket.user_id, "chat_id": ticket.chat_id}
+
+    async def close_support_ticket(self, ticket_id: int) -> dict[str, int] | None:
+        async with self.sessions() as db:
+            ticket = await db.get(SupportTicket, ticket_id)
+            if ticket is None or ticket.status == "closed":
+                return None
+            ticket.status = "closed"
+            ticket.updated_at = datetime.now(timezone.utc)
+            await db.commit()
+            return {"ticket_id": ticket.id, "user_id": ticket.user_id, "chat_id": ticket.chat_id}
+
+    async def open_support_tickets(self, limit: int = 10) -> list[dict[str, Any]]:
+        async with self.sessions() as db:
+            tickets = (await db.scalars(select(SupportTicket).where(
+                SupportTicket.status == "open").order_by(SupportTicket.updated_at.desc()).limit(limit))).all()
+            result = []
+            for ticket in tickets:
+                last = await db.scalar(select(SupportMessage).where(
+                    SupportMessage.ticket_id == ticket.id).order_by(SupportMessage.id.desc()).limit(1))
+                result.append({"id": ticket.id, "user_id": ticket.user_id,
+                               "last_sender": last.sender if last else "",
+                               "last_text": last.text if last else ""})
+            return result
+
+    # --- Доступ к ИИ и Telegram Stars --------------------------------------
+
+    async def subscription(self, user_id: int) -> dict[str, int]:
+        async with self.sessions() as db:
+            row = await db.get(Subscription, user_id)
+            return {"paid_until_ts": row.paid_until_ts if row else 0,
+                    "trial_used": row.trial_used if row else 0}
+
+    async def use_ai_request(self, user_id: int, *, daily_limit: int, trial_limit: int,
+                             exempt: bool, payments_enabled: bool,
+                             now_ts: int | None = None) -> str:
+        """Резервирует запрос к ИИ: "ok", "payment_required" или "daily_limit".
+
+        Без оплаты ничего не списывается. Пробный запрос списывается только
+        вместе с дневной квотой, чтобы пользователь не терял пробные попытки
+        на исчерпанном дневном лимите.
+        """
+        now_ts = int(time()) if now_ts is None else now_ts
+        trial = False
+        if payments_enabled and not exempt:
+            sub = await self.subscription(user_id)
+            if sub["paid_until_ts"] <= now_ts:
+                if sub["trial_used"] >= trial_limit:
+                    return "payment_required"
+                trial = True
+        if not await self.use_quota(user_id, daily_limit):
+            return "daily_limit"
+        if trial:
+            async with self.sessions() as db:
+                row = await db.get(Subscription, user_id)
+                if row is None:
+                    row = Subscription(user_id=user_id, paid_until_ts=0, trial_used=0)
+                    db.add(row)
+                    await db.flush()
+                result = await db.execute(
+                    update(Subscription)
+                    .where(Subscription.user_id == user_id, Subscription.trial_used < trial_limit)
+                    .values(trial_used=Subscription.trial_used + 1)
+                    .execution_options(synchronize_session=False)
+                )
+                await db.commit()
+                if result.rowcount != 1:
+                    return "payment_required"
+        return "ok"
+
+    async def record_star_payment(self, user_id: int, charge_id: str, provider_charge_id: str,
+                                  amount: int, currency: str, days: int,
+                                  *, now_ts: int | None = None) -> dict[str, Any]:
+        """Идемпотентно продлить доступ на `days` дней от max(сейчас, текущий срок)."""
+        now_ts = int(time()) if now_ts is None else now_ts
+        async with self.sessions() as db:
+            existing = await db.scalar(select(StarPayment).where(StarPayment.charge_id == charge_id))
+            sub = await db.get(Subscription, user_id)
+            if existing is not None:
+                return {"paid_until_ts": sub.paid_until_ts if sub else 0, "duplicate": True}
+            if sub is None:
+                sub = Subscription(user_id=user_id, paid_until_ts=0, trial_used=0)
+                db.add(sub)
+            sub.paid_until_ts = max(now_ts, sub.paid_until_ts or 0) + days * 86400
+            sub.updated_at = datetime.now(timezone.utc)
+            db.add(StarPayment(user_id=user_id, charge_id=charge_id,
+                               provider_charge_id=provider_charge_id or "",
+                               amount=amount, currency=currency, days=days, status="paid"))
+            await db.commit()
+            return {"paid_until_ts": sub.paid_until_ts, "duplicate": False}
+
+    async def star_payment(self, charge_id: str) -> dict[str, Any] | None:
+        async with self.sessions() as db:
+            row = await db.scalar(select(StarPayment).where(StarPayment.charge_id == charge_id))
+            if row is None:
+                return None
+            return {"user_id": row.user_id, "amount": row.amount, "days": row.days,
+                    "status": row.status}
+
+    async def mark_star_refunded(self, charge_id: str) -> bool:
+        """После успешного refundStarPayment: снять оплаченные дни."""
+        async with self.sessions() as db:
+            row = await db.scalar(select(StarPayment).where(StarPayment.charge_id == charge_id))
+            if row is None or row.status != "paid":
+                return False
+            row.status = "refunded"
+            sub = await db.get(Subscription, row.user_id)
+            if sub is not None:
+                sub.paid_until_ts = max(0, sub.paid_until_ts - row.days * 86400)
+                sub.updated_at = datetime.now(timezone.utc)
+            await db.commit()
+            return True

@@ -16,7 +16,10 @@ project="$(git rev-parse --show-toplevel 2>/dev/null)" || die "Run inside grunva
 cd "$project"
 [ "$(basename "$project")" = Sushef ] || die "Open the grunvald91/Sushef Codespace (not Ai_growth_os)."
 branch="$(git symbolic-ref -q --short HEAD)" || die "Checkout a branch rather than a detached HEAD."
-[ "$branch" = "fix/rich-dialog-real-answers-20261010" ] || die "Switch to fix/rich-dialog-real-answers-20261010 before deployment."
+case "$branch" in
+  fix/rich-dialog-real-answers-20261010|ccr-8c667ece-klncov) ;;
+  *) die "Switch to fix/rich-dialog-real-answers-20261010 or ccr-8c667ece-klncov (support + Stars) before deployment." ;;
+esac
 [ -z "$(git status --porcelain)" ] || die "Commit/stash your local changes before deploying the exact committed SHA."
 sha="$(git rev-parse HEAD)"
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "Invalid commit SHA"
