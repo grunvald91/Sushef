@@ -143,7 +143,7 @@ def main_keyboard() -> InlineKeyboardMarkup:
         [("📚 Моя кухня", "view:library"), ("🌍 Кухни мира", "view:cuisines")],
         [("🧪 Секреты мастерства", "view:techniques"), ("🥗 Мой вкус", "view:profile")],
         [("📖 Инструкция", "view:guide"), ("🛟 Поддержка", "support:new")],
-        [("✨ Все возможности", "view:more")],
+        [("⭐ Подписка", "view:subscription"), ("✨ Все возможности", "view:more")],
     ])
 
 
@@ -1083,7 +1083,7 @@ async def help_menu(message: Message) -> None:
             message,
             "👨‍🍳 Сушеф поможет придумать рецепт, спасти блюдо, составить меню "
             "и провести Вас по шагам приготовления.\n\n"
-            "Команды: /start, /menu, /help, /profile, /recipes, /memory, /remember, /export_my_data, /timers, /pantry, /week, /ferment, /subscribe, /support, /reset, /privacy, /delete_me.",
+            "Команды: /start, /menu, /help, /profile, /recipes, /memory, /remember, /timers, /pantry, /week, /ferment, /subscribe, /inline, /support, /paysupport, /terms, /cancel, /reset, /privacy, /export_my_data, /delete_me, /myid.",
             main_keyboard(),
         )
 

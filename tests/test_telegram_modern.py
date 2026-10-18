@@ -146,11 +146,42 @@ async def test_native_draft_preview_is_only_temporary():
 @pytest.mark.asyncio
 async def test_native_command_palette_without_botfather_overwrite():
     bot = SimpleNamespace(set_my_commands=AsyncMock())
-    assert await configure_bot_commands(bot)
-    kwargs = bot.set_my_commands.await_args.kwargs
-    commands = {cmd.command for cmd in bot.set_my_commands.await_args.args[0]}
-    assert kwargs["language_code"] == "ru"
-    assert {"start", "menu", "profile", "memory", "recipes"} <= commands
+    assert await configure_bot_commands(bot, {437862772})
+    calls = bot.set_my_commands.await_args_list
+    assert "language_code" not in calls[0].kwargs and "scope" not in calls[0].kwargs
+    assert calls[1].kwargs["language_code"] == "ru"
+    public = {cmd.command for cmd in calls[0].args[0]}
+    assert {"start", "menu", "subscribe", "paysupport", "terms", "support"} <= public
+    assert not {"tickets", "refund"} & public
+    assert calls[2].kwargs["scope"].chat_id == 437862772
+    assert {"tickets", "refund"} <= {cmd.command for cmd in calls[2].args[0]}
+
+
+def test_every_menu_command_has_a_handler_and_valid_name():
+    import re
+    from aiogram.filters import Command, CommandStart
+    from sushef import bot as bot_module, telegram_modern
+
+    handled = set()
+    for handler in bot_module.router.message.handlers:
+        for flt in handler.filters or ():
+            cb = flt.callback
+            if isinstance(cb, CommandStart):
+                handled.add("start")
+            elif isinstance(cb, Command):
+                handled.update(str(c) for c in cb.commands)
+    listed = telegram_modern.PUBLIC_COMMANDS + telegram_modern.SUPPORT_COMMANDS
+    for name, description in listed:
+        assert re.fullmatch(r"[a-z0-9_]{1,32}", name) and 3 <= len(description) <= 256
+        assert name in handled, name
+    assert len({n for n, _ in listed}) == len(listed)
+
+
+def test_main_menu_offers_subscription_purchase():
+    from sushef.bot import main_keyboard
+    data = [b.callback_data for row in main_keyboard().inline_keyboard for b in row]
+    # Статус и оплата за одно нажатие; прямой счёт не навязывается оплатившим.
+    assert "view:subscription" in data and "pay:buy" not in data
 
 
 def test_highly_personal_respect_without_false_memory():

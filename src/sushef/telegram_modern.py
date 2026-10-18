@@ -130,25 +130,56 @@ async def show_chef_thinking(message: Message, *, enabled: bool = True, mode: st
         return False
 
 
-async def configure_bot_commands(bot) -> bool:
-    """Discoverable native bot command menu, without overwriting BotFather Mini App."""
-    commands = [
-        BotCommand(command="start", description="Добро пожаловать на кухню"),
-        BotCommand(command="menu", description="Главное меню Сушефа"),
-        BotCommand(command="recipes", description="Моя коллекция блюд"),
-        BotCommand(command="pantry", description="Продукты, которые есть дома"),
-        BotCommand(command="week", description="Моё меню на неделю"),
-        BotCommand(command="profile", description="Мои вкусы и стиль общения"),
-        BotCommand(command="memory", description="Кулинарная память"),
-        BotCommand(command="timers", description="Мои кухонные таймеры"),
-        BotCommand(command="help", description="Инструкция: как пользоваться"),
-        BotCommand(command="subscribe", description="Подписка за Telegram Stars"),
-        BotCommand(command="inline", description="Сушеф в любом чате"),
-        BotCommand(command="support", description="Написать в службу поддержки"),
-    ]
+PUBLIC_COMMANDS = (
+    ("start", "Добро пожаловать на кухню"),
+    ("menu", "Главное меню Сушефа"),
+    ("recipes", "Моя коллекция блюд"),
+    ("pantry", "Продукты, которые есть дома"),
+    ("week", "Моё меню на неделю"),
+    ("timers", "Мои кухонные таймеры"),
+    ("profile", "Мои вкусы и стиль общения"),
+    ("memory", "Кулинарная память"),
+    ("remember", "Запомнить факт о моей кухне"),
+    ("ferment", "Ферментация и протоколы"),
+    ("subscribe", "Купить подписку за Telegram Stars"),
+    ("inline", "Сушеф в любом чате"),
+    ("help", "Инструкция: как пользоваться"),
+    ("support", "Написать в службу поддержки"),
+    ("paysupport", "Вопрос об оплате или возврате"),
+    ("terms", "Условия подписки"),
+    ("cancel", "Отменить текущий ввод"),
+    ("reset", "Очистить диалог и готовку"),
+    ("privacy", "Мои данные и приватность"),
+    ("export_my_data", "Выгрузить мои данные"),
+    ("delete_me", "Удалить все мои данные"),
+    ("myid", "Мой Telegram ID"),
+)
+SUPPORT_COMMANDS = (
+    ("tickets", "Поддержка: открытые обращения"),
+    ("refund", "Поддержка: возврат Stars по номеру платежа"),
+)
+
+
+async def configure_bot_commands(bot, support_admin_ids=()) -> bool:
+    """Native command menu for every client language; staff also see support commands.
+
+    Does not touch the BotFather menu button / Mini App.
+    """
+    from aiogram.types import BotCommandScopeChat
+
+    public = [BotCommand(command=c, description=d) for c, d in PUBLIC_COMMANDS]
+    staff = public + [BotCommand(command=c, description=d) for c, d in SUPPORT_COMMANDS]
     try:
-        await bot.set_my_commands(commands, language_code="ru")
-        return True
+        # Без language_code — для клиентов на любом языке, иначе меню видно только «ru».
+        await bot.set_my_commands(public)
+        await bot.set_my_commands(public, language_code="ru")
     except (TelegramAPIError, AttributeError) as exc:
         logger.info("Bot commands were not updated: %s", type(exc).__name__)
         return False
+    for admin_id in sorted(support_admin_ids):
+        try:
+            await bot.set_my_commands(staff, scope=BotCommandScopeChat(chat_id=admin_id))
+        except (TelegramAPIError, AttributeError) as exc:
+            # Сотрудник ещё не открыл бота: команды поддержки всё равно работают вручную.
+            logger.info("Support commands were not set: %s", type(exc).__name__)
+    return True

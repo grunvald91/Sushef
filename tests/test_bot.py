@@ -5,11 +5,11 @@ def test_main_keyboard_is_compact_with_deep_navigation():
     from sushef.bot import library_keyboard, more_keyboard
     markup = main_keyboard()
     assert len(markup.inline_keyboard) == 6
-    assert sum(len(row) for row in markup.inline_keyboard) == 11
+    assert sum(len(row) for row in markup.inline_keyboard) == 12
     data = {button.callback_data for row in markup.inline_keyboard for button in row}
     assert {"mode:recipe", "cook:start", "view:library", "view:more",
             "view:cuisines", "view:techniques", "view:profile",
-            "view:guide", "support:new"} <= data
+            "view:guide", "support:new", "view:subscription"} <= data
     library = {button.callback_data for row in library_keyboard().inline_keyboard for button in row}
     more = {button.callback_data for row in more_keyboard().inline_keyboard for button in row}
     assert {"view:pantry", "view:week", "view:archive", "view:memory"} <= library
