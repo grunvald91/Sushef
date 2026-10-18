@@ -27,7 +27,7 @@ from .dish_process_cards_v2 import scale_source_ingredients
 from .config import Settings
 from .telegram_format import telegram_chunks
 from .telegram_modern import send_recipe_card, show_chef_thinking
-from .telegram_dialogue import DraftStreamer, send_dialogue, culinary_answer_has_recipe, recipe_context_tag
+from .telegram_dialogue import DraftStreamer, GenerationStopped, send_dialogue, stop_stream, culinary_answer_has_recipe, recipe_context_tag
 from .conversation_quality import correct_egg_followup
 from .storage import Storage
 from .support import GUIDE_TEXT, SUPPORT_PROMPT, inline_guide_text, open_tickets_text, reply_for_user, ticket_for_admin, ticket_from_admin_message
@@ -1032,6 +1032,12 @@ async def send_subscription(message: Message, user: User, storage: Storage, sett
     await send_text(message, text, subscription_keyboard(settings) if paid else main_keyboard())
 
 
+@router.stopped_message_generation()
+async def generation_stopped(event) -> None:
+    """Пользователь нажал «стоп» на черновике: прекращаем поток ClaudeHub."""
+    stop_stream(event.chat.id, event.draft_id)
+
+
 @router.pre_checkout_query()
 async def pre_checkout(query: PreCheckoutQuery, settings: Settings) -> None:
     """Telegram ждёт ответа до 10 секунд; проверяем только сам счёт, без ИИ."""
@@ -1678,8 +1684,15 @@ async def culinary_request(message: Message, from_user: User, text: str, mode: s
                 if related:
                     ai_text += "\n\nТехнологические справки:\n" + technique_context(related)
             streamer = DraftStreamer(message) if settings.telegram_stream_answers else None
-            answer = await chef.answer(mode, ai_text, preferences, history, context,
-                                       on_partial=streamer)
+            try:
+                if streamer:
+                    with streamer:
+                        answer = await chef.answer(mode, ai_text, preferences, history, context,
+                                                   on_partial=streamer)
+                else:
+                    answer = await chef.answer(mode, ai_text, preferences, history, context)
+            except GenerationStopped as stop:
+                answer = (stop.partial.rstrip() or "…") + "\n\n⏹ Остановлено по Вашей просьбе."
             await storage.add_exchange(user_id, text, answer)
             if mode in {"ask", "rescue"} and culinary_answer_has_recipe(answer):
                 response_markup = dialogue_recipe_keyboard(recipe_context_tag(text))

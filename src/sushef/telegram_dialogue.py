@@ -136,6 +136,25 @@ def recipe_context_tag(question: str) -> str:
     return hashlib.sha256(question.encode("utf-8")).hexdigest()[:12]
 
 
+class GenerationStopped(Exception):
+    """Пользователь нажал «стоп» на черновике (Update.stopped_message_generation)."""
+
+    def __init__(self, partial: str):
+        super().__init__("generation stopped by user")
+        self.partial = partial
+
+
+ACTIVE_STREAMS: dict[tuple[int, int], "DraftStreamer"] = {}
+
+
+def stop_stream(chat_id: int, draft_id: int) -> bool:
+    streamer = ACTIVE_STREAMS.get((chat_id, draft_id))
+    if streamer is None:
+        return False
+    streamer.stopped = True
+    return True
+
+
 class DraftStreamer:
     """Показывает ответ ClaudeHub по мере генерации (sendRichMessageDraft, Bot API 10.3).
 
@@ -151,8 +170,19 @@ class DraftStreamer:
         self.last = float("-inf")
         self.enabled = message.chat.type == "private" and type(getattr(message, "message_id", None)) is int
         self.sent = 0
+        self.stopped = False
+
+    def __enter__(self) -> "DraftStreamer":
+        if self.enabled:
+            ACTIVE_STREAMS[(self.message.chat.id, self.message.message_id)] = self
+        return self
+
+    def __exit__(self, *exc) -> None:
+        ACTIVE_STREAMS.pop((self.message.chat.id, getattr(self.message, "message_id", 0)), None)
 
     async def __call__(self, partial: str) -> None:
+        if self.stopped:
+            raise GenerationStopped(partial)
         if not self.enabled or len(partial) < 40:
             return
         now = self.clock()
@@ -165,6 +195,7 @@ class DraftStreamer:
                 draft_id=self.message.message_id,
                 rich_message=InputRichMessage(
                     markdown=rich_dialog_markdown(structure_culinary_answer(partial[-6000:]))),
+                can_stop=True,  # кнопка «стоп» → Update.stopped_message_generation
             )
             self.sent += 1
         except Exception as exc:  # черновик — украшение, не причина сбоя ответа

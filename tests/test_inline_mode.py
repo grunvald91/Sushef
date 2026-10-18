@@ -88,3 +88,50 @@ async def test_chosen_question_without_subscription_does_not_call_ai(storage):
     chef = SimpleNamespace(answer=AsyncMock(side_effect=AssertionError("no AI without payment")))
     await chosen_question(result, storage, chef, settings())
     assert "по подписке" in bot.edit_message_text.await_args.kwargs["text"]
+
+
+def guest(text, user_id=UID):
+    bot = fake_bot()
+    bot.answer_guest_query = AsyncMock(return_value=SimpleNamespace(inline_message_id="G1"))
+    return SimpleNamespace(guest_query_id="gq1", text=text, caption=None, bot=bot,
+                           from_user=SimpleNamespace(id=user_id, username=None))
+
+
+@pytest.mark.asyncio
+async def test_guest_mode_answers_paid_users_in_foreign_chat(storage):
+    from sushef.inline_mode import guest_message
+    await storage.record_star_payment(UID, "c1", "", 100, "XTR", 30)
+    message = guest("@sushef_bot как спасти пересоленный суп")
+    chef = SimpleNamespace(answer=AsyncMock(return_value="Добавьте картофель."))
+    await guest_message(message, storage, chef, settings())
+    placeholder = message.bot.answer_guest_query.await_args.kwargs["result"]
+    assert "обдумывает" in placeholder.input_message_content.message_text
+    assert chef.answer.await_args.args[1].startswith("как спасти пересоленный суп")
+    assert message.bot.edit_message_text.await_args.kwargs["inline_message_id"] == "G1"
+
+
+@pytest.mark.asyncio
+async def test_guest_mode_without_subscription_offers_it_and_skips_ai(storage):
+    from sushef.inline_mode import guest_message
+    message = guest("@sushef_bot что приготовить")
+    chef = SimpleNamespace(answer=AsyncMock(side_effect=AssertionError("no AI")))
+    await guest_message(message, storage, chef, settings())
+    text = message.bot.answer_guest_query.await_args.kwargs["result"].input_message_content.message_text
+    assert "по подписке" in text
+    message.bot.edit_message_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stop_button_keeps_partial_answer():
+    from sushef.telegram_dialogue import DraftStreamer, GenerationStopped, stop_stream
+    message = SimpleNamespace(chat=SimpleNamespace(id=1, type="private"), message_id=7,
+                              bot=SimpleNamespace(send_rich_message_draft=AsyncMock()))
+    text = "Сначала обжарьте лук до золотистого цвета на среднем огне, помешивая. "
+    with DraftStreamer(message, interval=0) as streamer:
+        await streamer(text)
+        assert message.bot.send_rich_message_draft.await_args.kwargs["can_stop"] is True
+        assert stop_stream(1, 7)
+        with pytest.raises(GenerationStopped) as stopped:
+            await streamer(text * 2)
+    assert stopped.value.partial == text * 2
+    assert not stop_stream(1, 7)  # поток снят с учёта после выхода
