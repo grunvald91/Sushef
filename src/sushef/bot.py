@@ -206,12 +206,14 @@ async def is_support_admin(user: User, storage: Storage, settings: Settings) -> 
     """Сотрудник поддержки: ID из настроек или владелец SUPPORT_ADMIN_USERNAME.
 
     Username закрепляется в БД за первым написавшим аккаунтом, поэтому
-    смена владельца username не передаёт доступ к обращениям.
+    смена владельца username не передаёт доступ к обращениям. Если ID заданы
+    явно, username не даёт доступа: иначе чужой владелец имени стал бы сотрудником.
     """
     if user.id in settings.support_admin_id_set:
         return True
     username = settings.support_admin_username.lstrip("@").lower()
-    if username and user.username and user.username.lower() == username:
+    if (not settings.support_admin_id_set and username and user.username
+            and user.username.lower() == username):
         if await storage.register_support_admin(user.id, user.username):
             return True
     return user.id in await storage.support_admin_ids()

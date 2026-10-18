@@ -37,6 +37,25 @@ def test_defaults_price_and_exempt_owner_ids():
     assert settings(support_admin_ids="1, 2 x3").support_admin_id_set == {1, 2}
 
 
+def test_owner_ids_are_default_support_and_exempt():
+    s = Settings(_env_file=None, telegram_bot_token="123456:test-token",
+                 claudehub_api_key="sk-test-key")
+    assert s.support_admin_id_set == {437862772}
+    assert s.payment_exempt_id_set == {437862772, 719076753}
+
+
+@pytest.mark.asyncio
+async def test_username_does_not_grant_support_when_ids_are_set(storage):
+    from sushef.bot import is_support_admin
+    stranger = SimpleNamespace(id=GUEST, username="grunvald")
+    assert not await is_support_admin(stranger, storage, settings(support_admin_ids=str(ADMIN)))
+    assert await storage.support_admin_ids() == set()
+    assert await is_support_admin(SimpleNamespace(id=ADMIN, username=None), storage,
+                                  settings(support_admin_ids=str(ADMIN)))
+    # Запасной путь по username работает только при пустом списке ID.
+    assert await is_support_admin(stranger, storage, settings())
+
+
 def test_invoice_payload_is_bound_to_user_price_and_period():
     payload = invoice_payload(GUEST, 30)
     assert parse_payload(payload) == (30, GUEST)
