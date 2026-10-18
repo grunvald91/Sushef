@@ -139,6 +139,7 @@ async def test_ai_question_in_ordinary_ask_mode_really_calls_rich_dialogue():
     settings = SimpleNamespace(
         max_input_chars=3500, daily_ai_limit=25,
         telegram_draft_preview=False, telegram_rich_recipe_cards=True,
+        telegram_stream_answers=False,
         support_admin_id_set=frozenset(), payment_exempt_id_set=frozenset(),
         support_admin_username="grunvald", payments_enabled=True,
         free_trial_requests=10, stars_price=100, subscription_days=30,
@@ -235,4 +236,4 @@ async def test_old_recipe_button_cannot_transform_unrelated_new_chat(monkeypatch
     await convert_dialogue_to_recipe(callback, storage, chef, settings)
     chef.recipe.assert_not_awaited()
     storage.use_quota.assert_not_awaited()
-    assert "не последний" in callback.message.answer.await_args.args[0]
+    assert "выпал из истории" in callback.message.answer.await_args.args[0]

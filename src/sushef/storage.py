@@ -312,7 +312,7 @@ class Storage:
             await db.commit()
             return allowed
 
-    async def set_recipe(self, user_id: int, recipe: dict[str, Any]) -> None:
+    async def set_recipe(self, user_id: int, recipe: dict[str, Any]) -> int:
         async with self.sessions() as db:
             user = await self._user(db, user_id)
             user.last_recipe = recipe
@@ -322,8 +322,61 @@ class Storage:
                 CookingTimer.user_id == user_id,
                 CookingTimer.status.in_(("active", "sending"))
             ).values(status="cancelled"))
-            db.add(RecipeArchive(user_id=user_id, recipe=recipe, origin="generated"))
+            row = RecipeArchive(user_id=user_id, recipe=recipe, origin="generated")
+            db.add(row)
             await db.commit()
+            return row.id
+
+    async def store_recipe(self, user_id: int, recipe: dict[str, Any], *,
+                           favorite: bool = False, origin: str = "dialogue") -> int:
+        """Сохранить выжимку рецепта в «Мои рецепты» (и в избранное), не трогая готовку.
+
+        Повторное нажатие для того же ответа (recipe["dialogue_tag"]) не плодит копии.
+        """
+        tag = recipe.get("dialogue_tag")
+        async with self.sessions() as db:
+            await self._user(db, user_id)
+            row = None
+            if tag:
+                rows = (await db.scalars(select(RecipeArchive).where(
+                    RecipeArchive.user_id == user_id, RecipeArchive.origin == origin
+                ).order_by(RecipeArchive.id.desc()).limit(50))).all()
+                row = next((r for r in rows if (r.recipe or {}).get("dialogue_tag") == tag), None)
+            if row is None:
+                row = RecipeArchive(user_id=user_id, recipe=recipe, origin=origin)
+                db.add(row)
+                await db.flush()
+            if favorite:
+                await self._add_favorite(db, user_id, row.recipe)
+            await db.commit()
+            return row.id
+
+    async def archived_by_tag(self, user_id: int, tag: str) -> dict[str, Any] | None:
+        async with self.sessions() as db:
+            rows = (await db.scalars(select(RecipeArchive).where(
+                RecipeArchive.user_id == user_id).order_by(RecipeArchive.id.desc()).limit(50))).all()
+            row = next((r for r in rows if (r.recipe or {}).get("dialogue_tag") == tag), None)
+            return {"id": row.id, "recipe": row.recipe} if row else None
+
+    @staticmethod
+    async def _add_favorite(db: AsyncSession, user_id: int, recipe: dict[str, Any]) -> bool:
+        """Добавить в избранное без дубликатов; False — уже там."""
+        existing = (await db.scalars(select(Favorite.recipe).where(
+            Favorite.user_id == user_id).order_by(Favorite.id.desc()).limit(100))).all()
+        if recipe in existing:
+            return False
+        db.add(Favorite(user_id=user_id, recipe=recipe))
+        return True
+
+    async def favorite_archived(self, user_id: int, archive_id: int) -> bool | None:
+        """Рецепт из архива — в избранное. None — нет такого рецепта у пользователя."""
+        async with self.sessions() as db:
+            row = await db.get(RecipeArchive, archive_id)
+            if not row or row.user_id != user_id:
+                return None
+            added = await self._add_favorite(db, user_id, row.recipe)
+            await db.commit()
+            return added
 
     async def save_favorite(self, user_id: int) -> bool:
         async with self.sessions() as db:
@@ -1089,7 +1142,7 @@ class Storage:
     async def use_ai_request(self, user_id: int, *, daily_limit: int, trial_limit: int,
                              exempt: bool, payments_enabled: bool,
                              now_ts: int | None = None) -> str:
-        """Резервирует запрос к ИИ: "ok", "payment_required" или "daily_limit".
+        """Резервирует запрос к ИИ: "ok", "trial" (списан пробный), "payment_required" или "daily_limit".
 
         Без оплаты ничего не списывается. Пробный запрос списывается только
         вместе с дневной квотой, чтобы пользователь не терял пробные попытки
@@ -1121,6 +1174,7 @@ class Storage:
                 await db.commit()
                 if result.rowcount != 1:
                     return "payment_required"
+            return "trial"
         return "ok"
 
     async def record_star_payment(self, user_id: int, charge_id: str, provider_charge_id: str,

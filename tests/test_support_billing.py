@@ -60,8 +60,8 @@ def test_ticket_number_survives_telegram_rendering():
 @pytest.mark.asyncio
 async def test_trial_then_paywall_then_paid_access(storage):
     kw = dict(daily_limit=25, trial_limit=2, exempt=False, payments_enabled=True, now_ts=1000)
-    assert await storage.use_ai_request(GUEST, **kw) == "ok"
-    assert await storage.use_ai_request(GUEST, **kw) == "ok"
+    assert await storage.use_ai_request(GUEST, **kw) == "trial"
+    assert await storage.use_ai_request(GUEST, **kw) == "trial"
     assert await storage.use_ai_request(GUEST, **kw) == "payment_required"
     assert (await storage.subscription(GUEST))["trial_used"] == 2
     paid = await storage.record_star_payment(GUEST, "charge-1", "", 100, "XTR", 30, now_ts=1000)
@@ -85,7 +85,7 @@ async def test_exempt_and_disabled_payments_skip_paywall_but_keep_daily_limit(st
 @pytest.mark.asyncio
 async def test_daily_limit_does_not_burn_trial(storage):
     kw = dict(daily_limit=1, trial_limit=5, exempt=False, payments_enabled=True)
-    assert await storage.use_ai_request(GUEST, **kw) == "ok"
+    assert await storage.use_ai_request(GUEST, **kw) == "trial"
     assert await storage.use_ai_request(GUEST, **kw) == "daily_limit"
     assert (await storage.subscription(GUEST))["trial_used"] == 1
 

@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     max_input_chars: int = Field(default=3500, ge=200, le=12000)
     telegram_rich_recipe_cards: bool = True  # Bot API 10.3; HTML fallback on unsupported server
     telegram_draft_preview: bool = True  # Bot API 9.5; non-streaming temporary preview
+    telegram_stream_answers: bool = True  # Bot API 10.3 sendRichMessageDraft: ответ по мере генерации
     vision_enabled: bool = False  # Включать лишь после проверки vision у ClaudeHub
     max_photo_bytes: int = Field(default=4000000, ge=100000, le=8000000)
     # Служба поддержки: числовые Telegram ID через запятую. Username — запасной

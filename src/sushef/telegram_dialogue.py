@@ -16,6 +16,7 @@ from html import escape
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardMarkup, InputRichMessage, Message
 
+from .rich_blocks import markdown_to_blocks, needs_blocks
 from .telegram_format import telegram_chunks
 
 logger = logging.getLogger(__name__)
@@ -97,10 +98,17 @@ async def send_dialogue(
     prepared = structure_culinary_answer(answer) or "Не удалось сформировать ответ. Попробуем ещё раз?"
     if rich_enabled and 120 <= len(prepared) <= 28000:
         try:
+            # Таблицы и списки с галочками — нативными блоками; остальное Rich Markdown.
+            rich = None
+            if needs_blocks(prepared):
+                try:
+                    rich = InputRichMessage(blocks=markdown_to_blocks(prepared))
+                except ValueError:
+                    rich = None
+            if rich is None:
+                rich = InputRichMessage(markdown=rich_dialog_markdown(prepared))
             await message.bot.send_rich_message(
-                chat_id=message.chat.id,
-                rich_message=InputRichMessage(markdown=rich_dialog_markdown(prepared)),
-                reply_markup=markup,
+                chat_id=message.chat.id, rich_message=rich, reply_markup=markup,
             )
             return "rich"
         except TelegramBadRequest as exc:
@@ -126,3 +134,39 @@ def culinary_answer_has_recipe(text: str) -> bool:
 def recipe_context_tag(question: str) -> str:
     """Stable short digest prevents buttons on stale answers acting on new chat."""
     return hashlib.sha256(question.encode("utf-8")).hexdigest()[:12]
+
+
+class DraftStreamer:
+    """Показывает ответ ClaudeHub по мере генерации (sendRichMessageDraft, Bot API 10.3).
+
+    Черновик временный: итоговый ответ всегда отправляется обычным сообщением.
+    Любая ошибка черновика отключает его до конца ответа и не ломает генерацию.
+    """
+
+    def __init__(self, message: Message, *, interval: float = 1.2, clock=None):
+        import time
+        self.message = message
+        self.interval = interval
+        self.clock = clock or time.monotonic
+        self.last = float("-inf")
+        self.enabled = message.chat.type == "private" and type(getattr(message, "message_id", None)) is int
+        self.sent = 0
+
+    async def __call__(self, partial: str) -> None:
+        if not self.enabled or len(partial) < 40:
+            return
+        now = self.clock()
+        if now - self.last < self.interval:
+            return
+        self.last = now
+        try:
+            await self.message.bot.send_rich_message_draft(
+                chat_id=self.message.chat.id,
+                draft_id=self.message.message_id,
+                rich_message=InputRichMessage(
+                    markdown=rich_dialog_markdown(structure_culinary_answer(partial[-6000:]))),
+            )
+            self.sent += 1
+        except Exception as exc:  # черновик — украшение, не причина сбоя ответа
+            logger.debug("Streaming draft disabled: %s", type(exc).__name__)
+            self.enabled = False
