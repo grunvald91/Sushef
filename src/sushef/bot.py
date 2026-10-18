@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import json
 import logging
+from time import time
 from decimal import Decimal
 from typing import Any
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import BufferedInputFile, CallbackQuery, CopyTextButton, DisabledButton, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, CopyTextButton, DisabledButton, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Message, PreCheckoutQuery, SwitchInlineQueryChosenChat, User
 
 from .chef import Chef, RecipeFormatError, format_recipe
 from .timers import TIMER_PRESETS, MAX_MINUTES, suggested_timer, timer_progress, timer_start_text
@@ -26,8 +27,11 @@ from .dish_process_cards_v2 import scale_source_ingredients
 from .config import Settings
 from .telegram_format import telegram_chunks
 from .telegram_modern import send_recipe_card, show_chef_thinking
+from .telegram_dialogue import DraftStreamer, GenerationStopped, send_dialogue, stop_stream, culinary_answer_has_recipe, recipe_context_tag
 from .conversation_quality import correct_egg_followup
 from .storage import Storage
+from .support import GUIDE_TEXT, SUPPORT_PROMPT, inline_guide_text, open_tickets_text, reply_for_user, ticket_for_admin, ticket_from_admin_message
+from .billing import STARS_CURRENCY, checkout_error, format_until, invoice_payload, parse_payload, paywall_text, subscription_text, trial_offer_text
 
 logger = logging.getLogger(__name__)
 router = Router(name="telegram")
@@ -42,6 +46,69 @@ MODE_PROMPTS = {
 }
 
 
+# Кнопки быстрых действий: нажатие сразу выполняет запрос, печатать не нужно.
+# (режим, текст запроса для шефа)
+QUICK_ACTIONS: dict[str, tuple[str, str]] = {
+    "recipe:fast": ("recipe", "Быстрый ужин за 20–25 минут из обычных продуктов."),
+    "recipe:light": ("recipe", "Лёгкое, полезное и вкусное блюдо на обед или ужин."),
+    "recipe:hearty": ("recipe", "Сытное домашнее блюдо для всей семьи."),
+    "recipe:dessert": ("recipe", "Простой десерт без сложной техники."),
+    "pantry:fast": ("pantry_recipe", "Что-нибудь быстрое, до 25 минут."),
+    "pantry:hearty": ("pantry_recipe", "Сытное блюдо."),
+    "pantry:light": ("pantry_recipe", "Лёгкое блюдо."),
+    "ask:today": ("ask", "Что приготовить сегодня на ужин? Предложи 2–3 идеи под мой профиль."),
+    "ask:tips": ("ask", "Три профессиональных приёма, которые сразу сделают мои блюда вкуснее."),
+    "ask:spices": ("ask", "Какие специи и травы к чему подходят? Дай компактную таблицу для курицы, рыбы, говядины и овощей."),
+    "ask:store": ("ask", "Как дольше сохранить свежими зелень, овощи и ягоды в холодильнике?"),
+    "rescue:salt": ("rescue", "Я пересолил(а) блюдо. Как спасти?"),
+    "rescue:burnt": ("rescue", "Блюдо подгорело снизу. Что делать?"),
+    "rescue:thin": ("rescue", "Соус или суп получился слишком жидким. Как загустить?"),
+    "rescue:spicy": ("rescue", "Получилось слишком остро. Как смягчить?"),
+    "rescue:dry": ("rescue", "Пересушил(а) мясо. Как спасти и подать?"),
+    "rescue:sticky": ("rescue", "Рис или гарнир слипся и разварился. Что делать?"),
+    "plan:1": ("plan", "Меню на неделю для одного человека, обычный бюджет, готовка до 40 минут."),
+    "plan:2": ("plan", "Меню на неделю для двоих, обычный бюджет, готовка до 40 минут."),
+    "plan:4": ("plan", "Меню на неделю для семьи из 4 человек, обычный бюджет."),
+    "plan:budget": ("plan", "Экономное меню на неделю для двоих с минимумом покупок."),
+}
+
+QUICK_MENUS: dict[str, list[list[tuple[str, str]]]] = {
+    "recipe": [
+        [("📦 Из моих продуктов", "pantry:recipe")],
+        [("⚡ Ужин за 20 минут", "quick:recipe:fast"), ("🥗 Лёгкое", "quick:recipe:light")],
+        [("🍲 Сытное", "quick:recipe:hearty"), ("🍰 Десерт", "quick:recipe:dessert")],
+    ],
+    "ask": [
+        [("🍽 Что приготовить сегодня?", "quick:ask:today")],
+        [("🔪 Приёмы шефа", "quick:ask:tips"), ("🌿 Специи к блюдам", "quick:ask:spices")],
+        [("🧊 Как хранить продукты", "quick:ask:store")],
+    ],
+    "rescue": [
+        [("🧂 Пересолил", "quick:rescue:salt"), ("🔥 Подгорело", "quick:rescue:burnt")],
+        [("💧 Слишком жидко", "quick:rescue:thin"), ("🌶 Слишком остро", "quick:rescue:spicy")],
+        [("🥩 Пересушил мясо", "quick:rescue:dry"), ("🍚 Слипся гарнир", "quick:rescue:sticky")],
+    ],
+    "plan": [
+        [("👤 На одного", "quick:plan:1"), ("👫 На двоих", "quick:plan:2")],
+        [("👨‍👩‍👧‍👦 Семья из 4", "quick:plan:4"), ("💸 Экономное", "quick:plan:budget")],
+    ],
+}
+
+
+# Готовые значения профиля — выбор одним нажатием (свой вариант можно написать).
+PREF_CHOICES: dict[str, tuple[str, ...]] = {
+    "spice": ("без острого", "лёгкая", "средняя", "острая"),
+    "skill": ("начинающий", "уверенный", "опытный"),
+    "portions": ("1", "2", "3", "4", "6"),
+    "cook_time": ("15", "30", "45", "60"),
+    "budget": ("экономный", "обычный", "без ограничений"),
+}
+
+
+def quick_keyboard(mode: str) -> InlineKeyboardMarkup:
+    return keyboard(QUICK_MENUS.get(mode, []) + [[("🏠 Главное меню", "view:main")]])
+
+
 def keyboard(rows: list[list[tuple[str, str]]], *, force_reply: bool = False) -> InlineKeyboardMarkup:
     """Modern colored buttons, with only the primary/destructive CTA emphasized."""
     styles = {
@@ -49,12 +116,18 @@ def keyboard(rows: list[list[tuple[str, str]]], *, force_reply: bool = False) ->
         "cook:next": "success", "hello:start": "primary",
         "recipe:save": "success", "hello:save:warm": "success",
         "delete:confirm": "danger", "pantry:clear": "danger",
+        "pay:buy": "success",
     }
+    prefixed = (("quick:", "primary"), ("archive:fav:", "success"), ("dialogue:fav:", "success"),
+                ("archive:saved:", "success"), ("dialogue:save:", "success"),
+                ("archive:cook:", "primary"), ("support:close:", "danger"))
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(
                 text=label, callback_data=data,
-                style=styles.get(data, "success" if data.startswith("hello:save:") else None),
+                style=("primary" if data.startswith("dialogue:recipe:") else
+                       styles.get(data, "success" if data.startswith("hello:save:") else
+                                  next((st for prefix, st in prefixed if data.startswith(prefix)), None))),
             ) for label, data in row]
             for row in rows
         ],
@@ -69,7 +142,8 @@ def main_keyboard() -> InlineKeyboardMarkup:
         [("👨‍🍳 Готовим вместе", "cook:start"), ("🆘 Спасти блюдо", "mode:rescue")],
         [("📚 Моя кухня", "view:library"), ("🌍 Кухни мира", "view:cuisines")],
         [("🧪 Секреты мастерства", "view:techniques"), ("🥗 Мой вкус", "view:profile")],
-        [("✨ Все возможности", "view:more")],
+        [("📖 Инструкция", "view:guide"), ("🛟 Поддержка", "support:new")],
+        [("⭐ Подписка", "view:subscription"), ("✨ Все возможности", "view:more")],
     ])
 
 
@@ -89,8 +163,164 @@ def more_keyboard() -> InlineKeyboardMarkup:
         [("📚 Каталог протоколов", "protocol:list")],
         [("📅 План на неделю", "mode:plan"), ("🔔 Мои таймеры", "view:timers")],
         [("💬 Манера общения", "view:communication"), ("🥗 Профиль", "view:profile")],
+        [("🔎 Сушеф в любом чате", "view:inline")],
+        [("⭐ Подписка", "view:subscription"), ("🛟 Поддержка", "support:new")],
+        [("📖 Инструкция", "view:guide"), ("🏠 Главное меню", "view:main")],
+    ])
+
+
+def subscription_keyboard(settings: Settings) -> InlineKeyboardMarkup:
+    return keyboard([
+        [(f"⭐ Подписка на {settings.subscription_days} дн. за {settings.stars_price} ⭐", "pay:buy")],
+        [("🛟 Вопрос об оплате", "support:new"), ("🏠 Меню", "view:main")],
+    ])
+
+
+def trial_offer_keyboard(settings: Settings) -> InlineKeyboardMarkup:
+    return keyboard([
+        [(f"⭐ Месяц с Сушефом — {settings.stars_price} ⭐", "pay:buy")],
+        [("ℹ️ Что входит в подписку", "view:subscription")],
+    ])
+
+
+def dialogue_recipe_keyboard(tag: str) -> InlineKeyboardMarkup:
+    """Под рецептом из диалога: в карточку, в избранное, в «Мои рецепты»."""
+    return keyboard([
+        [("🧾 В карточку и готовить", "dialogue:recipe:" + tag)],
+        [("❤️ В избранное", "dialogue:fav:" + tag), ("📖 В мои рецепты", "dialogue:save:" + tag)],
         [("🏠 Главное меню", "view:main")],
     ])
+
+
+def support_admin_keyboard(ticket_id: int) -> InlineKeyboardMarkup:
+    return keyboard([[("✍️ Ответить", f"support:reply:{ticket_id}"),
+                      ("✅ Закрыть", f"support:close:{ticket_id}")]])
+
+
+def support_user_keyboard() -> InlineKeyboardMarkup:
+    return keyboard([[("✍️ Ответить поддержке", "support:new")],
+                     [("🏠 Главное меню", "view:main")]])
+
+
+async def is_support_admin(user: User, storage: Storage, settings: Settings) -> bool:
+    """Сотрудник поддержки: ID из настроек или владелец SUPPORT_ADMIN_USERNAME.
+
+    Username закрепляется в БД за первым написавшим аккаунтом, поэтому
+    смена владельца username не передаёт доступ к обращениям. Если ID заданы
+    явно, username не даёт доступа: иначе чужой владелец имени стал бы сотрудником.
+    """
+    if user.id in settings.support_admin_id_set:
+        return True
+    username = settings.support_admin_username.lstrip("@").lower()
+    if (not settings.support_admin_id_set and username and user.username
+            and user.username.lower() == username):
+        if await storage.register_support_admin(user.id, user.username):
+            return True
+    return user.id in await storage.support_admin_ids()
+
+
+async def payment_exempt(user: User, storage: Storage, settings: Settings) -> bool:
+    return user.id in settings.payment_exempt_id_set or await is_support_admin(user, storage, settings)
+
+
+async def reserve_ai_request(message: Message, user: User, storage: Storage,
+                             settings: Settings, limit_text: str) -> str | None:
+    """Подписка/пробные запросы + дневная квота. Сообщает пользователю об отказе.
+
+    Возвращает "ok", "trial" (списан бесплатный запрос) или None при отказе.
+    """
+    status = await storage.use_ai_request(
+        user.id, daily_limit=settings.daily_ai_limit,
+        trial_limit=settings.free_trial_requests,
+        exempt=await payment_exempt(user, storage, settings),
+        payments_enabled=settings.payments_enabled,
+    )
+    if status == "payment_required":
+        await send_text(message, paywall_text(price=settings.stars_price,
+                                              days=settings.subscription_days,
+                                              trial_limit=settings.free_trial_requests),
+                        subscription_keyboard(settings))
+        return None
+    if status == "daily_limit":
+        await send_text(message, limit_text, main_keyboard())
+        return None
+    return status
+
+
+async def send_trial_offer(message: Message, user_id: int, storage: Storage,
+                           settings: Settings) -> None:
+    """После каждого бесплатного ответа — предложение месячной подписки с кнопкой оплаты."""
+    sub = await storage.subscription(user_id)
+    await send_text(message, trial_offer_text(
+        left=max(0, settings.free_trial_requests - sub["trial_used"]),
+        trial_limit=settings.free_trial_requests,
+        price=settings.stars_price, days=settings.subscription_days,
+    ), trial_offer_keyboard(settings))
+
+
+async def notify_support(message: Message, storage: Storage, settings: Settings,
+                         ticket_id: int, text: str) -> int:
+    """Разослать обращение сотрудникам; вернуть число успешных доставок."""
+    user = message.from_user
+    recipients = set(settings.support_admin_id_set) | await storage.support_admin_ids()
+    card = ticket_for_admin(ticket_id, user.id, user.full_name, user.username, text)
+    delivered = 0
+    chunks = telegram_chunks(card)
+    for admin_id in sorted(recipients):
+        try:
+            for i, chunk in enumerate(chunks):
+                await message.bot.send_message(
+                    admin_id, chunk, parse_mode="HTML",
+                    reply_markup=support_admin_keyboard(ticket_id) if i == len(chunks) - 1 else None,
+                )
+            delivered += 1
+        except Exception as exc:
+            # Сотрудник ещё не открыл бота или заблокировал его — обращение остаётся в БД.
+            logger.warning("Support notification failed: %s", type(exc).__name__)
+    return delivered
+
+
+CELEBRATION_EFFECT_ID = "5046509860389126442"  # 🎉
+
+
+async def notify_payment(message: Message, storage: Storage, settings: Settings,
+                         charge_id: str, amount: int, paid_until_ts: int) -> None:
+    """Сообщить поддержке о новой оплате; номер платежа — в `коде` для /refund."""
+    user = message.from_user
+    who = user.full_name + (f" (@{user.username})" if user.username else "")
+    text = (f"⭐ Новая оплата: {amount} ⭐ от {who}, ID `{user.id}`.\n"
+            f"Подписка до {format_until(paid_until_ts)}.\n"
+            f"Возврат: `/refund {charge_id}`")
+    for admin_id in sorted(set(settings.support_admin_id_set) | await storage.support_admin_ids()):
+        try:
+            await message.bot.send_message(admin_id, telegram_chunks(text)[0], parse_mode="HTML")
+        except Exception as exc:
+            logger.warning("Payment notification failed: %s", type(exc).__name__)
+
+
+async def deliver_support_reply(message: Message, storage: Storage, ticket_id: int, text: str) -> None:
+    try:
+        target = await storage.add_support_reply(ticket_id, text)
+    except ValueError as exc:
+        await send_text(message, "Ответ не отправлен: " + str(exc))
+        return
+    if target is None:
+        await send_text(message, f"Обращение №{ticket_id} не найдено.")
+        return
+    chunks = telegram_chunks(reply_for_user(text))
+    try:
+        for i, chunk in enumerate(chunks):
+            await message.bot.send_message(
+                target["chat_id"], chunk, parse_mode="HTML",
+                reply_markup=support_user_keyboard() if i == len(chunks) - 1 else None,
+            )
+    except Exception as exc:
+        logger.warning("Support reply delivery failed: %s", type(exc).__name__)
+        await send_text(message, f"⚠️ Ответ сохранён в обращении №{ticket_id}, но Telegram "
+                        "не доставил его: возможно, пользователь заблокировал бота.")
+        return
+    await send_text(message, f"✅ Ответ по обращению №{ticket_id} отправлен.",
+                    support_admin_keyboard(ticket_id))
 
 
 def welcome_keyboard() -> InlineKeyboardMarkup:
@@ -380,11 +610,15 @@ def cooking_insight_text(session: dict, focus: str = "why") -> str:
             ("\n\n👀 На что смотреть:\n" + data["cue"] if data.get("cue") else ""))
 
 
-def recipe_keyboard(recipe: dict | None = None) -> InlineKeyboardMarkup:
+def recipe_keyboard(recipe: dict | None = None, archive_id: int | None = None) -> InlineKeyboardMarkup:
+    """Карточка рецепта. С archive_id кнопки сохраняют ИМЕННО этот рецепт, а не последний."""
+    save = ([("❤️ В избранное", f"archive:fav:{archive_id}"),
+             ("📖 В мои рецепты", f"archive:saved:{archive_id}")] if archive_id else
+            [("❤️ В избранное", "recipe:save"), ("📖 Мои рецепты", "view:archive")])
     rows = [
         [("👨‍🍳 Готовим пошагово", "cook:start")],
-        [("❤️ Сохранить рецепт", "recipe:save"), ("🛒 Список продуктов", "view:shop")],
-        [("😋 Оценить результат", "view:rating")],
+        save,
+        [("🛒 Список продуктов", "view:shop"), ("😋 Оценить", "view:rating")],
         [("🏠 Главное меню", "view:main")],
     ]
     markup = keyboard(rows)
@@ -534,7 +768,7 @@ def profile_text(prefs: dict[str, str]) -> str:
     lines = ["🥗 Твои настройки кухни:" if prefs.get("address_form") == "ты" else "🥗 Ваши настройки кухни:"]
     lines.extend(f"• {label}: {prefs.get(key) or 'не указано'}" for key, label in PREF_LABELS.items())
     lines.append("\n" + communication_summary(prefs))
-    lines.append("\nДля очистки отдельного поля отправьте «-». Острота: без острого/лёгкая/средняя/острая; уровень: начинающий/уверенный/опытный.")
+    lines.append("\nДля очистки отдельного поля отправьте `-`. Острота: без острого/лёгкая/средняя/острая; уровень: начинающий/уверенный/опытный.")
     return "\n".join(lines)
 
 
@@ -611,7 +845,7 @@ def pantry_keyboard() -> InlineKeyboardMarkup:
 
 def pantry_text(rows: list[dict]) -> str:
     if not rows:
-        return "📦 Ваши запасы пока пусты. Добавьте продукты, например «картофель 500 г» и «яйца 4 шт»."
+        return "📦 Ваши запасы пока пусты. Добавьте продукты, например `картофель 500 г` и `яйца 4 шт`."
     return ("📦 В Вашей кухне записано:\n" +
             "\n".join(f"• {r['display_name']} — {format_quantity(r['quantity'], r['unit'])}" for r in rows) +
             "\n\nЭто записанные Вами остатки, а не сведения о свежести продуктов.")
@@ -650,11 +884,21 @@ async def private_only(message: Message) -> bool:
 
 
 @router.message(CommandStart())
-async def start(message: Message, storage: Storage) -> None:
+async def start(message: Message, storage: Storage, settings: Settings) -> None:
     if not await private_only(message) or not message.from_user:
         return
     user = await storage.get_user(message.from_user.id)
     prefs = user["preferences"]
+    if await is_support_admin(message.from_user, storage, settings):
+        await send_text(message, "🛟 Вы подключены как служба поддержки: новые обращения "
+                        "будут приходить сюда. Открытые — /tickets.")
+    payload = (message.text or "").partition(" ")[2].strip()
+    if payload == "subscribe":
+        await send_subscription(message, message.from_user, storage, settings)
+        return
+    if payload == "inline":
+        await send_inline_guide(message, message.from_user, storage, settings)
+        return
     if not prefs.get("conversation_style") and not prefs.get("onboarding_skipped"):
         await send_text(
             message,
@@ -668,14 +912,178 @@ async def start(message: Message, storage: Storage) -> None:
         await send_text(message, welcome_back(prefs), main_keyboard())
 
 
-@router.message(Command("menu", "help"))
+@router.message(Command("help", "guide"))
+async def guide_command(message: Message) -> None:
+    if await private_only(message):
+        await send_text(message, GUIDE_TEXT, main_keyboard())
+
+
+@router.message(Command("support", "paysupport"))
+async def support_command(message: Message, storage: Storage) -> None:
+    if not await private_only(message) or not message.from_user:
+        return
+    await storage.set_mode(message.from_user.id, "support:write")
+    await send_text(message, SUPPORT_PROMPT)
+
+
+@router.message(Command("subscribe", "premium"))
+async def subscribe_command(message: Message, storage: Storage, settings: Settings) -> None:
+    if not await private_only(message) or not message.from_user:
+        return
+    await send_subscription(message, message.from_user, storage, settings)
+
+
+@router.message(Command("terms"))
+async def terms_command(message: Message, settings: Settings) -> None:
+    if await private_only(message):
+        await send_text(
+            message,
+            "📜 **Условия подписки Сушефа**\n\n"
+            f"• Подписка стоит {settings.stars_price} ⭐ и действует {settings.subscription_days} дней "
+            "с момента оплаты; новая оплата продлевает текущий срок.\n"
+            "• Подписка открывает запросы к кулинарному ИИ в пределах дневного лимита "
+            f"({settings.daily_ai_limit} в сутки).\n"
+            "• Подписка открывает Сушефа в любом чате: `@имя_бота вопрос` (inline-режим, "
+            "только по подписке, пробные запросы на него не действуют).\n"
+            "• Советы ИИ — кулинарные рекомендации, а не гарантия безопасности продукта.\n"
+            "• Вопросы об оплате и возврате — /paysupport. Возврат Stars выполняется через Telegram.",
+        )
+
+
+@router.message(Command("inline"))
+async def inline_command(message: Message, storage: Storage, settings: Settings) -> None:
+    if await private_only(message) and message.from_user:
+        await send_inline_guide(message, message.from_user, storage, settings)
+
+
+@router.message(Command("myid"))
+async def my_id_command(message: Message) -> None:
+    if await private_only(message) and message.from_user:
+        await send_text(message, f"🪪 Ваш Telegram ID: `{message.from_user.id}` — нажмите, чтобы скопировать.")
+
+
+@router.message(Command("tickets"))
+async def tickets_command(message: Message, storage: Storage, settings: Settings) -> None:
+    if not await private_only(message) or not message.from_user:
+        return
+    if not await is_support_admin(message.from_user, storage, settings):
+        await send_text(message, "Команда доступна только службе поддержки.")
+        return
+    tickets = await storage.open_support_tickets()
+    rows = [[(f"✍️ №{t['id']}", f"support:reply:{t['id']}"),
+             (f"✅ Закрыть №{t['id']}", f"support:close:{t['id']}")] for t in tickets]
+    await send_text(message, open_tickets_text(tickets), keyboard(rows) if rows else None)
+
+
+@router.message(Command("refund"))
+async def refund_command(message: Message, storage: Storage, settings: Settings) -> None:
+    if not await private_only(message) or not message.from_user:
+        return
+    if not await is_support_admin(message.from_user, storage, settings):
+        await send_text(message, "Команда доступна только службе поддержки.")
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    charge_id = parts[1].strip() if len(parts) == 2 else ""
+    payment = await storage.star_payment(charge_id) if charge_id else None
+    if payment is None:
+        await send_text(message, "Укажите идентификатор платежа: `/refund <номер платежа>`. Номер приходит в уведомлении об оплате.")
+        return
+    if payment["status"] != "paid":
+        await send_text(message, "Этот платёж уже возвращён.")
+        return
+    try:
+        await message.bot.refund_star_payment(payment["user_id"], charge_id)
+    except Exception as exc:
+        logger.warning("Star refund failed: %s", type(exc).__name__)
+        await send_text(message, "Telegram не выполнил возврат. Проверьте идентификатор и попробуйте позже.")
+        return
+    await storage.mark_star_refunded(charge_id)
+    await send_text(message, f"↩️ Возвращено {payment['amount']} ⭐, срок подписки уменьшен на {payment['days']} дн.")
+
+
+async def send_inline_guide(message: Message, user: User, storage: Storage, settings: Settings) -> None:
+    """Как пользоваться Сушефом в любом чате; для оплативших — кнопка выбора чата."""
+    from .inline_mode import inline_allowed
+    me = await message.bot.me()
+    allowed = await inline_allowed(user, storage, settings)
+    await send_text(message, inline_guide_text(me.username, allowed=allowed,
+                                               price=settings.stars_price))
+    if allowed:
+        markup = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💬 Выбрать чат и спросить", style="primary",
+                                  switch_inline_query_chosen_chat=SwitchInlineQueryChosenChat(
+                                      query="", allow_user_chats=True, allow_group_chats=True,
+                                      allow_channel_chats=True))],
+            [InlineKeyboardButton(text="🔍 Попробовать здесь", switch_inline_query_current_chat="")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="view:main")],
+        ])
+        await message.answer("👇 Начните прямо сейчас:", reply_markup=markup)
+    else:
+        await message.answer("👇 Оформите подписку, и Сушеф будет помогать в любом чате:",
+                             reply_markup=subscription_keyboard(settings))
+
+
+async def send_subscription(message: Message, user: User, storage: Storage, settings: Settings) -> None:
+    exempt = await payment_exempt(user, storage, settings)
+    text = subscription_text(
+        await storage.subscription(user.id), price=settings.stars_price,
+        days=settings.subscription_days, trial_limit=settings.free_trial_requests,
+        exempt=exempt, payments_enabled=settings.payments_enabled, now_ts=int(time()),
+    )
+    paid = settings.payments_enabled and not exempt
+    await send_text(message, text, subscription_keyboard(settings) if paid else main_keyboard())
+
+
+@router.stopped_message_generation()
+async def generation_stopped(event) -> None:
+    """Пользователь нажал «стоп» на черновике: прекращаем поток ClaudeHub."""
+    stop_stream(event.chat.id, event.draft_id)
+
+
+@router.pre_checkout_query()
+async def pre_checkout(query: PreCheckoutQuery, settings: Settings) -> None:
+    """Telegram ждёт ответа до 10 секунд; проверяем только сам счёт, без ИИ."""
+    error = checkout_error(query.invoice_payload, query.currency, query.total_amount,
+                           user_id=query.from_user.id, price=settings.stars_price,
+                           days=settings.subscription_days)
+    if not settings.payments_enabled:
+        error = "Оплата сейчас не принимается."
+    await query.answer(ok=error is None, error_message=error)
+
+
+@router.message(F.successful_payment)
+async def successful_payment(message: Message, storage: Storage, settings: Settings) -> None:
+    payment = message.successful_payment
+    if not message.from_user or payment is None or payment.currency != STARS_CURRENCY:
+        return
+    parsed = parse_payload(payment.invoice_payload)
+    days = parsed[0] if parsed else settings.subscription_days
+    result = await storage.record_star_payment(
+        message.from_user.id, payment.telegram_payment_charge_id,
+        payment.provider_payment_charge_id or "", payment.total_amount, payment.currency, days,
+    )
+    await storage.set_mode(message.from_user.id, "ask")
+    thanks = ("⭐ Благодарю! Подписка активна до " + format_until(result["paid_until_ts"]) +
+              ".\nС возвращением к плите — что приготовим? 🍲")
+    try:
+        # Bot API: праздничный эффект 🎉 на сообщении в личном чате.
+        await message.answer(telegram_chunks(thanks)[0], parse_mode="HTML",
+                             reply_markup=main_keyboard(), message_effect_id=CELEBRATION_EFFECT_ID)
+    except Exception:
+        await send_text(message, thanks, main_keyboard())
+    if not result["duplicate"]:
+        await notify_payment(message, storage, settings, payment.telegram_payment_charge_id,
+                             payment.total_amount, result["paid_until_ts"])
+
+
+@router.message(Command("menu"))
 async def help_menu(message: Message) -> None:
     if await private_only(message):
         await send_text(
             message,
             "👨‍🍳 Сушеф поможет придумать рецепт, спасти блюдо, составить меню "
             "и провести Вас по шагам приготовления.\n\n"
-            "Команды: /start, /menu, /help, /profile, /recipes, /memory, /remember, /export_my_data, /timers, /pantry, /week, /ferment, /reset, /privacy, /delete_me.",
+            "Команды: /start, /menu, /help, /profile, /recipes, /memory, /remember, /timers, /pantry, /week, /ferment, /subscribe, /inline, /support, /paysupport, /terms, /cancel, /reset, /privacy, /export_my_data, /delete_me, /myid.",
             main_keyboard(),
         )
 
@@ -791,13 +1199,15 @@ async def privacy(message: Message) -> None:
             "🔒 Для работы сохраняются Ваш Telegram ID, выбранные настройки, "
             "до 40 последних реплик диалога, автоматический архив рецептов, избранное, "
             "подтверждённые и ожидающие подтверждения заметки, оценки блюд, продукты, "
-            "недельное меню, таймеры и время их срабатывания, партии ферментации, их замеры и шаги приготовления. "
+            "недельное меню, таймеры и время их срабатывания, партии ферментации, их замеры и шаги приготовления, обращения в поддержку, "
+            "срок подписки и платежи Telegram Stars. "
             "Запросы, история диалога и указанные предпочтения передаются провайдеру ClaudeHub "
             "для генерации ответа. Никаких сторонних рекламных рассылок бот не делает.\n\n"
             "/reset — очистить только диалог; рецепты, профиль и память останутся.\n"
             "/memory — просмотр и удаление подтверждённых заметок.\n"
             "/export_my_data — скачать все личные записи.\n"
-            "/delete_me — удалить данные из рабочей базы (резервные копии имеют отдельный срок хранения).\n"
+            "/delete_me — удалить данные из рабочей базы (резервные копии имеют отдельный срок хранения). "
+            "Срок подписки и записи о платежах Stars сохраняются для возвратов и учёта.\n"
             "Не отправляйте в чат пароли и другую чувствительную информацию.",
         )
 
@@ -824,13 +1234,13 @@ async def inspect_photo(message: Message, storage: Storage, chef: Chef, settings
     if size.file_size and size.file_size > settings.max_photo_bytes:
         await send_text(message, "Фотография слишком большая. Пришлите снимок меньшего размера.")
         return
-    if not await storage.use_quota(message.from_user.id, settings.daily_ai_limit):
-        await send_text(message, "На сегодня лимит запросов к ИИ исчерпан.")
+    access = await reserve_ai_request(message, message.from_user, storage, settings,
+                                      "На сегодня лимит запросов к ИИ исчерпан.")
+    if not access:
         return
     try:
         await message.bot.send_chat_action(message.chat.id, "typing")
-        await show_chef_thinking(message, enabled=settings.telegram_draft_preview,
-                                 mode=mode, preferences=preferences)
+        await show_chef_thinking(message, enabled=settings.telegram_draft_preview, mode="ask")
         stream = await message.bot.download(size)
         if stream is None or not hasattr(stream, "getvalue"):
             raise RuntimeError("Telegram не предоставил изображение")
@@ -845,6 +1255,8 @@ async def inspect_photo(message: Message, storage: Storage, chef: Chef, settings
                         + result,
                         keyboard([[("➕ Записать продукты вручную", "pantry:add")],
                                   [("🥘 Подобрать рецепт", "mode:recipe"), ("🏠 Меню", "view:main")]]))
+        if access == "trial":
+            await send_trial_offer(message, message.from_user.id, storage, settings)
     except Exception as exc:
         logger.warning("Optional vision request failed: %s", type(exc).__name__)
         await send_text(message, "📷 Пока не удалось разобрать фото. Возможно, модель "
@@ -876,16 +1288,41 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
 
     user = await storage.get_user(user_id)
     mode = user["mode"]
-    preferences = dict(user["preferences"])
-    feedback = await storage.recent_feedback(user_id)
-    if feedback:
-        preferences["recent_cooking_feedback"] = feedback
-    patterns = await storage.feedback_patterns(user_id)
-    if patterns["repeated_issues"]:
-        preferences["feedback_patterns_not_confirmed_preferences"] = patterns
-    memories = await storage.personal_memories(user_id, limit=10)
-    if memories:
-        preferences["confirmed_kitchen_memory"] = short_memory_context(memories)
+
+    replied = getattr(message, "reply_to_message", None)
+    reply_ticket = (ticket_from_admin_message(replied.text)
+                    if replied and replied.from_user and replied.from_user.id == message.bot.id
+                    else None)
+    if mode.startswith("support:reply:") or reply_ticket is not None:
+        if await is_support_admin(message.from_user, storage, settings):
+            ticket_id = reply_ticket if reply_ticket is not None else int(mode.rsplit(":", 1)[1])
+            if mode.startswith("support:reply:"):
+                await storage.set_mode(user_id, "ask")
+            await deliver_support_reply(message, storage, ticket_id, text)
+            return
+        if mode.startswith("support:reply:"):
+            await storage.set_mode(user_id, "ask")
+            mode = "ask"
+
+    if mode == "support:write":
+        try:
+            ticket_id = await storage.add_support_message(
+                user_id, message.chat.id, text, daily_limit=settings.support_daily_limit)
+        except ValueError as exc:
+            await send_text(message, "Сообщение не отправлено: " + str(exc) + ". Попробуйте ещё раз или /cancel.")
+            return
+        await storage.set_mode(user_id, "ask")
+        delivered = await notify_support(message, storage, settings, ticket_id, text)
+        await send_text(
+            message,
+            (f"✅ Обращение №{ticket_id} передано в поддержку. Ответ придёт в этот чат."
+             if delivered else
+             f"✅ Обращение №{ticket_id} сохранено. Поддержка ответит в этот чат, как только освободится."),
+            main_keyboard(),
+        )
+        return
+
+    preferences = await ai_preferences(storage, user_id, user["preferences"])
 
     if mode == "onboard:name":
         try:
@@ -1033,7 +1470,7 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
             )
         except ValueError as exc:
             await send_text(message, "Замер не записан: " + str(exc) +
-                            "\nПример: t=22; ph=4.1; note=появились пузырьки")
+                            "\nПример: `t=22; ph=4.1; note=появились пузырьки`")
             return
         await storage.set_mode(user_id, "ask")
         if not saved:
@@ -1084,8 +1521,38 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
             await send_text(message, correction, main_keyboard())
             return
 
-    if not await storage.use_quota(user_id, settings.daily_ai_limit):
-        await send_text(message, "На сегодня лимит обращений к ИИ исчерпан. Завтра (по UTC) снова сможем творить вкусное! 🍲")
+    await culinary_request(message, message.from_user, text, mode, preferences,
+                           storage, chef, settings)
+
+
+async def ai_preferences(storage: Storage, user_id: int, base: dict) -> dict:
+    """Профиль + отзывы + подтверждённая память — контекст для ClaudeHub."""
+    preferences = dict(base)
+    feedback = await storage.recent_feedback(user_id)
+    if feedback:
+        preferences["recent_cooking_feedback"] = feedback
+    patterns = await storage.feedback_patterns(user_id)
+    if patterns["repeated_issues"]:
+        preferences["feedback_patterns_not_confirmed_preferences"] = patterns
+    memories = await storage.personal_memories(user_id, limit=10)
+    if memories:
+        preferences["confirmed_kitchen_memory"] = short_memory_context(memories)
+    return preferences
+
+
+async def culinary_request(message: Message, from_user: User, text: str, mode: str,
+                           preferences: dict, storage: Storage, chef: Chef,
+                           settings: Settings) -> None:
+    """Запрос к ИИ из текста или кнопки быстрого действия.
+
+    `message` — чат для ответа (сообщение пользователя или бота с кнопкой),
+    `from_user` — кто нажал/написал.
+    """
+    user_id = from_user.id
+    access = await reserve_ai_request(
+        message, from_user, storage, settings,
+        "На сегодня лимит обращений к ИИ исчерпан. Завтра (по UTC) снова сможем творить вкусное! 🍲")
+    if not access:
         return
 
     try:
@@ -1151,14 +1618,14 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
                     "source_url": reference["source_url"],
                     "publisher": reference["publisher"], "adapted": True,
                 }
-            await storage.set_recipe(user_id, recipe)
+            archive_id = await storage.set_recipe(user_id, recipe)
             await storage.add_exchange(
                 user_id, text, "Создан рецепт: " + recipe["title"] +
                 ". Рецепт сохранён автоматически в личном архиве."
             )
             await storage.set_mode(user_id, "ask")
             await send_recipe_card(
-                message, recipe, recipe_keyboard(recipe),
+                message, recipe, recipe_keyboard(recipe, archive_id),
                 rich_enabled=settings.telegram_rich_recipe_cards,
             )
         elif mode == "plan":
@@ -1218,11 +1685,30 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
                 related = await storage.technique_matches(text, limit=2)
                 if related:
                     ai_text += "\n\nТехнологические справки:\n" + technique_context(related)
-            answer = await chef.answer(mode, ai_text, preferences, history, context)
+            streamer = DraftStreamer(message) if settings.telegram_stream_answers else None
+            try:
+                if streamer:
+                    with streamer:
+                        answer = await chef.answer(mode, ai_text, preferences, history, context,
+                                                   on_partial=streamer)
+                else:
+                    answer = await chef.answer(mode, ai_text, preferences, history, context)
+            except GenerationStopped as stop:
+                answer = (stop.partial.rstrip() or "…") + "\n\n⏹ Остановлено по Вашей просьбе."
             await storage.add_exchange(user_id, text, answer)
-            await send_text(message, answer,
-                            cooking_keyboard() if mode == "cook" else
-                            fermentation_keyboard() if mode == "ferment" else main_keyboard())
+            if mode in {"ask", "rescue"} and culinary_answer_has_recipe(answer):
+                response_markup = dialogue_recipe_keyboard(recipe_context_tag(text))
+            else:
+                response_markup = (
+                    cooking_keyboard() if mode == "cook" else
+                    fermentation_keyboard() if mode == "ferment" else main_keyboard()
+                )
+            await send_dialogue(
+                message, answer, response_markup,
+                rich_enabled=settings.telegram_rich_recipe_cards,
+            )
+        if access == "trial":
+            await send_trial_offer(message, user_id, storage, settings)
     except (RecipeFormatError, WeeklyPlanError):
         logger.warning("Model returned malformed structured culinary response")
         await send_text(message, "Не удалось оформить рецепт или меню без ошибок. Попробуйте переформулировать запрос.", main_keyboard())
@@ -1235,8 +1721,203 @@ async def text_message(message: Message, storage: Storage, chef: Chef, settings:
         )
 
 
+def find_dialogue_answer(history: list[dict[str, str]], tag: str) -> tuple[str, str] | None:
+    """Вопрос и ответ шефа, к которым относится кнопка (по хэшу вопроса), новые первыми."""
+    for i in range(len(history) - 2, -1, -1):
+        question, reply = history[i], history[i + 1]
+        if (question.get("role") == "user" and reply.get("role") == "assistant"
+                and recipe_context_tag(question.get("content", "")) == tag):
+            return question["content"], reply["content"]
+    return None
+
+
+SUMMARY_PROMPT = (
+    "Сделай ВЫЖИМКУ самого главного из совета Сушефа в JSON-рецепт для личной "
+    "кулинарной книги: точное название блюда, все продукты с количествами из совета, "
+    "сжатые шаги (до 8) без лишних слов, ключевые ориентиры времени и признаки "
+    "готовности. Не добавляй продукты и количества, которых не было в совете; "
+    "неизвестное количество пиши «по вкусу». chef_note — одна фраза о главной "
+    "хитрости блюда.\nИсходный вопрос:\n"
+)
+
+
+@router.callback_query(F.data.startswith(("dialogue:fav:", "dialogue:save:")))
+async def save_dialogue_recipe(
+    callback: CallbackQuery, storage: Storage, chef: Chef, settings: Settings
+) -> None:
+    """«В избранное» / «В мои рецепты» под ответом с рецептом: выжимка + сохранение."""
+    if not callback.from_user or not isinstance(callback.message, Message):
+        await callback.answer()
+        return
+    message = callback.message
+    if message.chat.type != "private":
+        await callback.answer()
+        return
+    _, action, tag = (callback.data or "").split(":", 2)
+    favorite = action == "fav"
+    user_id = callback.from_user.id
+    existing = await storage.archived_by_tag(user_id, tag)
+    if existing:
+        await storage.store_recipe(user_id, existing["recipe"], favorite=favorite)
+        await callback.answer("❤️ Уже в избранном и «Моих рецептах»" if favorite
+                              else "📖 Уже в «Моих рецептах»", show_alert=False)
+        return
+    found = find_dialogue_answer(await storage.get_history(user_id, limit=40), tag)
+    if not found:
+        await callback.answer("Ответ уже выпал из истории — задайте вопрос ещё раз.", show_alert=True)
+        return
+    await callback.answer("✍️ Делаю выжимку рецепта…")
+    # Сохранение уже полученного ответа не тратит пробные запросы, только дневной лимит.
+    if not await storage.use_quota(user_id, settings.daily_ai_limit):
+        await send_text(message, "На сегодня лимит ИИ исчерпан — сохраню завтра. "
+                        "Сам ответ останется в истории.", main_keyboard())
+        return
+    question, answer = found
+    prefs = (await storage.get_user(user_id))["preferences"]
+    try:
+        await message.bot.send_chat_action(message.chat.id, "typing")
+        recipe = await chef.recipe(SUMMARY_PROMPT + question[:1500] +
+                                   "\nСовет шефа:\n" + answer[:5000], prefs)
+    except RecipeFormatError:
+        await send_text(message, "Не получилось аккуратно сжать этот рецепт. "
+                        "Попробуйте ещё раз чуть позже.", main_keyboard())
+        return
+    except Exception as exc:
+        logger.warning("Recipe summary failed: %s", type(exc).__name__)
+        await send_text(message, "Сейчас не удалось сохранить рецепт. Попробуйте позже.",
+                        main_keyboard())
+        return
+    recipe["dialogue_tag"] = tag
+    archive_id = await storage.store_recipe(user_id, recipe, favorite=favorite)
+    await send_text(message, ("❤️ Выжимка рецепта сохранена в избранное и «Мои рецепты»."
+                              if favorite else "📖 Выжимка рецепта сохранена в «Мои рецепты»."))
+    await send_recipe_card(
+        message, recipe,
+        keyboard([[("👨‍🍳 Готовить по этой карточке", f"archive:cook:{archive_id}")],
+                  [("❤️ В избранное", f"archive:fav:{archive_id}"), ("📖 Мои рецепты", "view:archive")],
+                  [("🏠 Главное меню", "view:main")]]),
+        rich_enabled=settings.telegram_rich_recipe_cards,
+    )
+
+
+@router.callback_query(F.data.startswith("quick:"))
+async def quick_action(
+    callback: CallbackQuery, storage: Storage, chef: Chef, settings: Settings
+) -> None:
+    """Кнопка быстрого действия: сразу выполняет запрос к шефу."""
+    await callback.answer()
+    if not callback.from_user or not isinstance(callback.message, Message):
+        return
+    message = callback.message
+    if message.chat.type != "private":
+        return
+    user_id = callback.from_user.id
+    parts = (callback.data or "").split(":")
+    kind = parts[1] if len(parts) > 1 else ""
+    if kind in {"recipe", "pantry", "ask", "rescue", "plan"} and len(parts) == 3:
+        action = QUICK_ACTIONS.get(kind + ":" + parts[2])
+        if not action:
+            return
+        mode, text = action
+        if mode == "pantry_recipe" and not await storage.pantry(user_id):
+            await send_text(message, "Сначала запишем продукты, которые есть дома.", pantry_keyboard())
+            return
+    elif kind == "week" and len(parts) == 4 and parts[2].isdecimal():
+        mode, text = f"weekly:{parts[2]}:{parts[3]}", "Порции и ограничения — по моему профилю."
+    elif kind == "catalog" and len(parts) == 3:
+        mode, text = "catalog:" + parts[2], "Классическая домашняя версия, порции по моему профилю."
+    elif kind == "tech" and len(parts) == 4:
+        mode = "technique:" + parts[2]
+        text = ("Объясни, как и почему работает эта техника, с практическим примером."
+                if parts[3] == "how" else "Какие частые ошибки в этой технике и как их избежать?")
+    elif kind == "adapt" and len(parts) == 4 and parts[3].isdecimal():
+        source = (await storage.select_archived_recipe(user_id, int(parts[3]), activate=False)
+                  if parts[2] == "arc" else
+                  await storage.select_favorite(user_id, int(parts[3]), activate=False))
+        if not source:
+            await send_text(message, "Рецепт недоступен.", main_keyboard())
+            return
+        mode = "recipe"
+        products = ", ".join(str(i.get("name", "")) for i in source.get("ingredients", [])
+                             if isinstance(i, dict))
+        text = (f"Адаптируй под мои текущие аллергены и исключения блюдо «{source.get('title', '')}». "
+                f"Исходные продукты: {products[:800]}.")
+    else:
+        return
+    await storage.set_mode(user_id, mode)
+    preferences = await ai_preferences(storage, user_id, (await storage.get_user(user_id))["preferences"])
+    await culinary_request(message, callback.from_user, text, mode, preferences,
+                           storage, chef, settings)
+
+
+@router.callback_query(F.data.startswith("dialogue:recipe:"))
+async def convert_dialogue_to_recipe(
+    callback: CallbackQuery, storage: Storage, chef: Chef, settings: Settings
+) -> None:
+    """Turn the selected free-chat recipe into a proper guided cooking card."""
+    await callback.answer()
+    if not callback.from_user or not isinstance(callback.message, Message):
+        return
+    message = callback.message
+    if message.chat.type != "private":
+        return
+    tag = (callback.data or "").rsplit(":", 1)[-1]
+    found = find_dialogue_answer(await storage.get_history(callback.from_user.id, limit=40), tag)
+    if not found:
+        await send_text(message, "Этот ответ уже выпал из истории диалога. "
+                        "Задайте вопрос ещё раз — и я всё оформлю.",
+                        main_keyboard())
+        return
+    question, last_answer = found
+    if not culinary_answer_has_recipe(last_answer):
+        await send_text(message, "В этом ответе ещё нет полноценной рецептуры. "
+                        "Давайте уточним продукты и я всё оформлю.",
+                        keyboard([[("🥘 Создать рецепт", "mode:recipe")]]))
+        return
+    access = await reserve_ai_request(message, callback.from_user, storage, settings,
+                                      "На сегодня лимит ИИ-оформлений исчерпан. "
+                                      "Сам текст рецепта останется в истории.")
+    if not access:
+        return
+    prefs = (await storage.get_user(callback.from_user.id))["preferences"]
+    source = (
+        "Оформи предыдущий совет Сушефа в полноценный проверяемый JSON-рецепт "
+        "для пошаговой готовки. Сохраняй основной выбор блюда и исходные "
+        "оговорённые количества, если они уместны и безопасны. "
+        "Если количество не было известно, не притворяйся, что оно измерено. "
+        "Ориентиры времени и температуры корректируй по безопасности и "
+        "обозначай их зависимость от толщины продукта. Не записывай "
+        "несуществующие продукты в качестве имеющихся.\n"
+        "Исходный запрос пользователя:\n" + question[:2000] +
+        "\nПредыдущий ответ (черновик, не авторитетный источник):\n" +
+        last_answer[:4500]
+    )
+    try:
+        await message.bot.send_chat_action(message.chat.id, "typing")
+        recipe = await chef.recipe(source, prefs)
+        archive_id = await storage.set_recipe(callback.from_user.id, recipe)
+        await storage.add_exchange(
+            callback.from_user.id, "Оформить последний ответ как техкарту",
+            "Создан структурированный рецепт: " + recipe["title"],
+        )
+        await send_recipe_card(
+            message, recipe, recipe_keyboard(recipe, archive_id),
+            rich_enabled=settings.telegram_rich_recipe_cards,
+        )
+        if access == "trial":
+            await send_trial_offer(message, callback.from_user.id, storage, settings)
+    except RecipeFormatError:
+        logger.warning("Failed to format conversation into recipe")
+        await send_text(message, "Карточка не прошла проверку. Текст прежнего совета "
+                        "сохранён; попробуем ещё раз по рецепту.", main_keyboard())
+    except Exception as exc:
+        logger.warning("Recipe conversion failed: %s", type(exc).__name__)
+        await send_text(message, "Сейчас не удалось оформить карточку. "
+                        "Ваши рецепты и настройки не потеряны.", main_keyboard())
+
+
 @router.callback_query()
-async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
+async def button_clicked(callback: CallbackQuery, storage: Storage, settings: Settings) -> None:
     if not callback.from_user or not isinstance(callback.message, Message):
         await callback.answer()
         return
@@ -1247,6 +1928,63 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
     await callback.answer()
     user_id = callback.from_user.id
     data = callback.data or ""
+
+    if data == "view:guide":
+        await send_text(message, GUIDE_TEXT, main_keyboard())
+        return
+
+    if data == "support:new":
+        await storage.set_mode(user_id, "support:write")
+        await send_text(message, SUPPORT_PROMPT)
+        return
+
+    if data.startswith(("support:reply:", "support:close:")):
+        _, action, raw_id = data.split(":", 2)
+        if not raw_id.isdecimal() or not await is_support_admin(callback.from_user, storage, settings):
+            return
+        ticket_id = int(raw_id)
+        if action == "reply":
+            await storage.set_mode(user_id, "support:reply:" + raw_id)
+            await send_text(message, f"✍️ Напишите ответ по обращению №{ticket_id} одним сообщением. "
+                            "Отмена — /cancel.")
+            return
+        closed = await storage.close_support_ticket(ticket_id)
+        if closed is None:
+            await send_text(message, f"Обращение №{ticket_id} уже закрыто или не найдено.")
+            return
+        try:
+            await message.bot.send_message(
+                closed["chat_id"],
+                f"✅ Обращение №{ticket_id} закрыто. Если вопрос остался — просто напишите в поддержку снова.",
+                reply_markup=support_user_keyboard(),
+            )
+        except Exception as exc:
+            logger.warning("Support close notification failed: %s", type(exc).__name__)
+        await send_text(message, f"✅ Обращение №{ticket_id} закрыто.")
+        return
+
+    if data == "view:inline":
+        await send_inline_guide(message, callback.from_user, storage, settings)
+        return
+
+    if data == "view:subscription":
+        await send_subscription(message, callback.from_user, storage, settings)
+        return
+
+    if data == "pay:buy":
+        if not settings.payments_enabled or await payment_exempt(callback.from_user, storage, settings):
+            await send_subscription(message, callback.from_user, storage, settings)
+            return
+        await message.answer_invoice(
+            title=f"Сушеф: подписка на {settings.subscription_days} дней",
+            description="Рецепты, ответы шефа, спасение блюд и меню на неделю "
+                        f"на {settings.subscription_days} дней.",
+            payload=invoice_payload(user_id, settings.subscription_days),
+            currency=STARS_CURRENCY,
+            prices=[LabeledPrice(label=f"Подписка на {settings.subscription_days} дней",
+                                 amount=settings.stars_price)],
+        )
+        return
 
     if data == "view:library":
         await send_text(message, "📚 Здесь живёт Ваша кулинарная история: сохранённые блюда, "
@@ -1398,7 +2136,10 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
             return
         await storage.set_mode(user_id, "technique:" + tid)
         await send_text(message, "С удовольствием разберём тонкости «" + item["title"] +
-                        "». Что именно хочется понять или попробовать?")
+                        "». Нажмите вопрос или напишите свой.",
+                        keyboard([[("🔬 Как это работает", f"quick:tech:{tid}:how")],
+                                  [("⚠️ Частые ошибки", f"quick:tech:{tid}:err")]]
+                                 if len(f"quick:tech:{tid}:how") <= 64 else []))
         return
 
     if data in {"cook:why", "cook:fix"}:
@@ -1519,8 +2260,9 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         await send_text(
             message,
             f"👨‍🍳 {row['title']} — прекрасный выбор!\n"
-            "Какие продукты есть под рукой, на сколько человек готовим и нужно ли "
-            "что-нибудь исключить? На основе источника подготовлю удобную домашнюю версию.",
+            "Нажмите «Домашняя версия сразу» или напишите, какие продукты есть, "
+            "на сколько человек готовим и что исключить.",
+            keyboard([[("⚡ Домашняя версия сразу", f"quick:catalog:{slug}")]]),
         )
         return
 
@@ -1534,6 +2276,41 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         except ValueError:
             return
         await show_archive(message, storage, user_id, page)
+        return
+
+    if data.startswith(("archive:fav:", "archive:saved:", "archive:cook:")):
+        _, action, raw_id = data.split(":", 2)
+        if not raw_id.isdecimal():
+            return
+        archive_id = int(raw_id)
+        if action == "fav":
+            added = await storage.favorite_archived(user_id, archive_id)
+            await send_text(message, "Рецепт недоступен." if added is None else
+                            "❤️ Добавлено в избранное! Ваш вкус достоин собственной кулинарной книги."
+                            if added else "❤️ Этот рецепт уже в избранном.",
+                            keyboard([[("❤️ Избранное", "view:favorites"), ("🏠 Меню", "view:main")]]))
+            return
+        if action == "saved":
+            recipe = await storage.select_archived_recipe(user_id, archive_id, activate=False)
+            await send_text(message, "📖 Рецепт сохранён в «Моих рецептах» — найдёте его в любой момент."
+                            if recipe else "Рецепт недоступен.",
+                            keyboard([[("📖 Мои рецепты", "view:archive"), ("🏠 Меню", "view:main")]]))
+            return
+        if not await storage.select_archived_recipe(user_id, archive_id, activate=False):
+            await send_text(message, "Рецепт недоступен.", main_keyboard())
+            return
+        recipe = await storage.select_archived_recipe(user_id, archive_id, activate=True)
+        if recipe is None:
+            await send_text(message, "⚠️ Рецепт не проверен на Ваши текущие пищевые ограничения, "
+                            "поэтому сразу готовить по нему не предлагаю.",
+                            keyboard([[("🔄 Адаптировать под мои ограничения", f"quick:adapt:arc:{archive_id}")],
+                                      [("🏠 Главное меню", "view:main")]]))
+            return
+        session = await storage.start_cooking(user_id)
+        if session is None:
+            await send_text(message, "В этом рецепте нет шагов для пошаговой готовки.", main_keyboard())
+            return
+        await send_text(message, cooking_text(session), cooking_keyboard(session))
         return
 
     if data.startswith("archive:open:"):
@@ -1553,11 +2330,13 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
                 message,
                 "⚠️ Рецепт из архива не проверен на Ваши текущие пищевые ограничения. "
                 "Для готовки сформируйте новую адаптированную версию.\n\n"
-                + format_recipe(recipe), main_keyboard()
+                + format_recipe(recipe),
+                keyboard([[("🔄 Адаптировать под мои ограничения", f"quick:adapt:arc:{recipe_id}")],
+                          [("🏠 Главное меню", "view:main")]])
             )
         else:
             await send_text(message, "📖 Восстановленный рецепт:\n\n" +
-                            format_recipe(recipe), recipe_keyboard())
+                            format_recipe(recipe), recipe_keyboard(recipe, recipe_id))
         return
 
     if data == "view:memory":
@@ -1725,7 +2504,8 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         mode = data.split(":", 1)[1]
         if mode in MODE_PROMPTS:
             await storage.set_mode(user_id, mode)
-            await send_text(message, MODE_PROMPTS[mode])
+            await send_text(message, MODE_PROMPTS[mode] +
+                            "\n\nИли выберите вариант — начну сразу 👇", quick_keyboard(mode))
         return
 
     if data == "view:ferment":
@@ -1918,7 +2698,7 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
             return
         await storage.set_mode(user_id, f"fnew:{category}")
         await send_text(message, "📓 Введите название и, если есть, проверенный источник:\n"
-                        "Капуста 08.10 | NCHFP sauerkraut\n\n"
+                        "`Капуста 08.10 | NCHFP sauerkraut`\n\n"
                         "После знака «|» пишите название или ссылку на конкретный протокол. "
                         "Сушеф сохранит эту информацию, но не будет автоматически считать "
                         "источник или продукт безопасным.")
@@ -1960,7 +2740,7 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
             return
         await storage.set_mode(user_id, f"flog:{batch_id}")
         await send_text(message, "📝 Введите замер (градусы Цельсия):\n"
-                        "t=22; ph=4.1; note=появились пузырьки\n\n"
+                        "`t=22; ph=4.1; note=появились пузырьки`\n\n"
                         "Можно указать только одно или два поля. "
                         "Запись измерения НЕ подтверждает безопасность продукта.")
         return
@@ -2024,7 +2804,7 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         await storage.set_mode(user_id, data)
         await send_text(message, ("➕ Напишите продукты для добавления:" if data.endswith("add") else
                             "➖ Укажите количество, которое нужно убрать:") +
-                        "\nКаждый с новой строки. Например:\nкартофель 500 г\nмолоко 1 л\nяйца 4 шт")
+                        "\nКаждый с новой строки. Например:\n```\nкартофель 500 г\nмолоко 1 л\nяйца 4 шт\n```")
         return
 
     if data == "pantry:recipe":
@@ -2033,8 +2813,11 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
             await send_text(message, "Сначала запишем продукты, которыми Вы располагаете.", pantry_keyboard())
             return
         await storage.set_mode(user_id, "pantry_recipe")
-        await send_text(message, "🥘 Отлично, продукты я вижу. Что предпочитаете: быстрое, сытное, лёгкое? "
-                        "Напишите пожелания, и я составлю рецепт из Ваших запасов.")
+        await send_text(message, "🥘 Отлично, продукты я вижу. Что предпочитаете? "
+                        "Нажмите вариант или напишите свои пожелания.",
+                        keyboard([[("⚡ Быстро", "quick:pantry:fast"), ("🍲 Сытно", "quick:pantry:hearty"),
+                                   ("🥗 Легко", "quick:pantry:light")],
+                                  [("🏠 Главное меню", "view:main")]]))
         return
 
     if data == "pantry:confirm_clear":
@@ -2088,7 +2871,10 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         dish = plan["days"][day_index][meal_key]
         await storage.set_mode(user_id, f"weekly:{day_index}:{meal_key}")
         await send_text(message, f"👨‍🍳 {MEAL_NAMES[meal_index]}: {dish}\n"
-                        "Укажите порции и пожелания, например «на троих, без острого».")
+                        "Нажмите «Рецепт сразу» или напишите порции и пожелания, например "
+                        "`на троих, без острого`.",
+                        keyboard([[("⚡ Рецепт сразу", f"quick:week:{day_index}:{meal_key}")],
+                                  [("📆 Моё меню", "view:week")]]))
         return
 
     if data == "view:rating":
@@ -2122,11 +2908,30 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
         await send_text(message, profile_text(user["preferences"]), profile_keyboard())
         return
 
+    if data.startswith("prefset:"):
+        _, key, raw = data.split(":", 2)
+        choices = PREF_CHOICES.get(key, ())
+        if not raw.isdecimal() or int(raw) >= len(choices):
+            return
+        value = choices[int(raw)]
+        await storage.set_preference(user_id, key, value)
+        await storage.set_mode(user_id, "ask")
+        updated = await storage.get_user(user_id)
+        await send_text(message, "Прекрасно! Настройки обновлены.\n\n" +
+                        profile_text(updated["preferences"]), profile_keyboard())
+        return
+
     if data.startswith("pref:"):
         key = data.split(":", 1)[1]
         if key in PREF_LABELS:
             await storage.set_mode(user_id, "pref:" + key)
-            await send_text(message, f"Введите значение для «{PREF_LABELS[key]}».\nДля очистки отправьте «-».")
+            choices = PREF_CHOICES.get(key, ())
+            buttons = [(label, f"prefset:{key}:{i}") for i, label in enumerate(choices)]
+            rows = [buttons[j:j + 2] for j in range(0, len(buttons), 2)]
+            await send_text(message, f"«{PREF_LABELS[key]}»: " +
+                            ("выберите вариант или напишите свой." if choices else "напишите значение.") +
+                            "\nДля очистки отправьте `-`.",
+                            keyboard(rows + [[("🥗 Профиль", "view:profile")]]))
         return
 
     if data == "recipe:show":
@@ -2146,9 +2951,25 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
     if data == "view:shop":
         user = await storage.get_user(user_id)
         recipe = user["last_recipe"]
-        await send_text(message,
-                        format_shopping_comparison(recipe, await storage.pantry(user_id)) if recipe else
-                        "🛒 Сначала создайте или выберите рецепт.", main_keyboard())
+        if not recipe:
+            await send_text(message, "🛒 Сначала создайте или выберите рецепт.", quick_keyboard("recipe"))
+            return
+        text = format_shopping_comparison(recipe, await storage.pantry(user_id))
+        # Rich-список с галочками (Bot API 10.3); в обычном HTML остаются ☐/✅.
+        checklist = "\n".join(
+            "- [ ] " + line[2:] if line.startswith("☐ ") else
+            "- [x] " + line[2:] if line.startswith("✅ ") else line
+            for line in text.split("\n"))
+        to_buy = [line[2:] for line in text.split("\n") if line.startswith("☐ ")]
+        markup = keyboard([[("📦 Мои продукты", "view:pantry"), ("🏠 Меню", "view:main")]])
+        raw = ", ".join(to_buy)
+        if 1 <= len(raw) <= 256:
+            markup.inline_keyboard.insert(0, [InlineKeyboardButton(
+                text="📋 Скопировать список покупок", copy_text=CopyTextButton(text=raw))])
+        if settings.telegram_rich_recipe_cards:
+            await send_dialogue(message, checklist, markup, rich_enabled=True)
+        else:
+            await send_text(message, text, markup)
         return
 
     if data == "view:favorites":
@@ -2173,7 +2994,9 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
             await send_text(message,
                             "⚠️ Этот сохранённый рецепт НЕ проверен с учётом Ваших текущих ограничений. "
                             "Я не активировал его для готовки. Составьте новый адаптированный рецепт.\n\n" +
-                            format_recipe(recipe), main_keyboard())
+                            format_recipe(recipe),
+                            keyboard([[("🔄 Адаптировать под мои ограничения", f"quick:adapt:fav:{favorite_id}")],
+                                      [("🏠 Главное меню", "view:main")]]))
         elif recipe:
             await send_recipe_card(message, recipe, recipe_keyboard(recipe))
         else:
@@ -2186,7 +3009,13 @@ async def button_clicked(callback: CallbackQuery, storage: Storage) -> None:
             await send_text(message, cooking_text(session), cooking_keyboard(session))
         else:
             await storage.set_mode(user_id, "recipe")
-            await send_text(message, "👨‍🍳 Для начала выберем блюдо. Что у Вас есть из продуктов?")
+            recent = await storage.archived_recipes(user_id, limit=4)
+            rows = [[("👨‍🍳 " + item["recipe"].get("title", "Рецепт")[:40], f"archive:cook:{item['id']}")]
+                    for item in recent]
+            await send_text(message, "👨‍🍳 Выберем блюдо! " +
+                            ("Продолжим один из Ваших рецептов, " if recent else "") +
+                            "возьмём быструю идею или напишите, какие продукты есть.",
+                            keyboard(rows + QUICK_MENUS["recipe"] + [[("🏠 Главное меню", "view:main")]]))
         return
 
     if data == "cook:previous":

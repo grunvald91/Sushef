@@ -4,6 +4,7 @@ import logging
 from aiogram import Dispatcher
 
 from .bot import router
+from .inline_mode import router as inline_router
 from .chef import Chef
 from .config import load_settings
 from .telegram import create_bot
@@ -21,12 +22,14 @@ async def main() -> None:
     chef = Chef(settings)
     bot = create_bot(settings)
     dp = Dispatcher()
+    dp.include_router(inline_router)
     dp.include_router(router)
     timer_task = None
     try:
         # Один экземпляр polling. Для нескольких экземпляров нужен webhook + распределённая изоляция.
         await bot.delete_webhook(drop_pending_updates=False)
-        await configure_bot_commands(bot)
+        await configure_bot_commands(
+            bot, settings.support_admin_id_set | await storage.support_admin_ids())
         timer_task = asyncio.create_task(run_timer_worker(bot, storage), name="sushef-cooking-timers")
         await dp.start_polling(bot, storage=storage, chef=chef, settings=settings, tasks_concurrency_limit=20)
     finally:

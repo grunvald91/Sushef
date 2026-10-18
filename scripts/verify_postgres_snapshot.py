@@ -82,7 +82,7 @@ async def main():
             if actual["dish_rows"].get(name) != expected:
                 raise RuntimeError("Existing dish card changed: " + name)
         revision = await conn.fetchval("SELECT version_num FROM alembic_version")
-        if revision != "0005_prod_cards":
+        if revision != "0006_support_billing":
             raise RuntimeError("Unexpected Alembic revision")
         from sushef.dish_process_cards_v2 import V2_DISH_CARDS
         for card in V2_DISH_CARDS:
@@ -90,7 +90,7 @@ async def main():
                                            WHERE id=$1 AND production_spec IS NOT NULL)""", card["id"])
             if not exists:
                 raise RuntimeError("Version 2 card absent: " + card["id"])
-        print("MIGRATION_DATA_OK revision=0005_prod_cards; existing_rows_preserved; v2_cards=" + str(len(V2_DISH_CARDS)))
+        print("MIGRATION_DATA_OK revision=0006_support_billing; existing_rows_preserved; v2_cards=" + str(len(V2_DISH_CARDS)))
     finally:
         await conn.close()
 

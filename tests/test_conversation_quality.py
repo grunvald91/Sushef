@@ -126,7 +126,7 @@ async def test_telegram_handler_answers_egg_question_without_charging_ai_quota()
         personal_memories=AsyncMock(return_value=[]),
         get_history=AsyncMock(return_value=previous),
         add_exchange=AsyncMock(),
-        use_quota=AsyncMock(side_effect=AssertionError("Direct repair must not call ClaudeHub")),
+        use_ai_request=AsyncMock(side_effect=AssertionError("Direct repair must not call ClaudeHub")),
     )
     message = SimpleNamespace(
         text="А при чём здесь яйца?",
@@ -136,7 +136,7 @@ async def test_telegram_handler_answers_egg_question_without_charging_ai_quota()
     )
     settings = SimpleNamespace(max_input_chars=3500, daily_ai_limit=25)
     await text_message(message, storage, object(), settings)
-    storage.use_quota.assert_not_awaited()
+    storage.use_ai_request.assert_not_awaited()
     storage.add_exchange.assert_awaited_once()
     answer_sent = message.answer.await_args.args[0]
     assert "крок-мадам" in answer_sent

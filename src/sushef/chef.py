@@ -169,11 +169,32 @@ class Chef:
             raise RuntimeError("Модель вернула пустой ответ")
         return answer
 
-    async def answer(self, mode: str, text: str, preferences: dict, history: list[dict[str, str]], cooking_context: str = "") -> str:
-        return await self._request(
-            build_system(mode, preferences, cooking_context),
-            history[-10:] + [{"role": "user", "content": text}],
-        )
+    async def _stream(self, system: str, messages: list[dict[str, str]], on_partial) -> str:
+        """Потоковый ответ; если поток не дал ни одного символа — обычный запрос."""
+        received = ""
+        try:
+            async with self.client.messages.stream(
+                model=self.model, system=system, max_tokens=self.max_tokens, messages=messages,
+            ) as stream:
+                async for chunk in stream.text_stream:
+                    received += chunk
+                    await on_partial(received)
+        except Exception:
+            if received:
+                raise
+            return await self._request(system, messages)
+        answer = received.strip()
+        if not answer:
+            return await self._request(system, messages)
+        return answer
+
+    async def answer(self, mode: str, text: str, preferences: dict, history: list[dict[str, str]],
+                     cooking_context: str = "", on_partial=None) -> str:
+        system = build_system(mode, preferences, cooking_context)
+        messages = history[-10:] + [{"role": "user", "content": text}]
+        if on_partial is not None:
+            return await self._stream(system, messages, on_partial)
+        return await self._request(system, messages)
 
     async def recipe(self, text: str, preferences: dict) -> dict[str, Any]:
         output = await self._request(
