@@ -1,0 +1,60 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Сушеф: Тесты + резервная копия БД (без деплоя)",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "scripts/check_and_backup_codespaces.sh"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
+      "label": "Сушеф: Проверить код без Actions",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "-lc",
+        "set -euo pipefail; python3 -m venv .venv; .venv/bin/python -m pip install -q -r requirements-dev.txt; PYTHONPATH=src .venv/bin/python -m compileall -q src tests migrations; PYTHONPATH=src .venv/bin/python -m pytest -q"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
+      "label": "Сушеф: Тесты + деплой на сервер 155",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "scripts/deploy_via_codespaces.sh"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    }
+  ]
+}
