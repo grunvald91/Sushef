@@ -143,3 +143,19 @@ async def test_telegram_handler_answers_egg_question_without_charging_ai_quota()
     assert "картофельных драников" in answer_sent
     assert "Яйца в холодильнике найдутся?" not in answer_sent
     assert message.answer.await_args.kwargs["parse_mode"] == "HTML"
+
+
+def test_persona_has_character_core_with_precision_and_safe_compliment_rules():
+    from sushef.prompts import build_system
+
+    text = build_system("ask", {"address_form": "вы"})
+    assert "ЯДРО ХАРАКТЕРА СУШЕФА" in text
+    # образный отклик на реальные слова человека и точный рецепт с признаками готовности
+    for needle in ("ВСТУПЛЕНИЕ", "НАБЛЮДАЕМЫМ признаком готовности", "## 🥗 Продукты",
+                   "## 💡 Тонкости вкуса", "вместо «горсть» и «немного»"):
+        assert needle in text
+    # комплимент выбору разрешён, выдумка прошлого запрещена
+    assert "комплимент выбору, который виден в сообщении" in text
+    assert "Нельзя лишь выдумывать" in text
+    # примеры не должны подсказывать блюдо, которое пользователи часто спрашивают в проверках
+    assert "шакшук" not in text.lower() and "менемен" not in text.lower()
