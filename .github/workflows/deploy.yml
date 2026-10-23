@@ -1,0 +1,43 @@
+# Ручной деплой Сушефа на сервер. Запускается ТОЛЬКО кнопкой (Actions → Deploy → Run workflow).
+# Никаких автозапусков по push / pull_request: репозиторий публичный, секреты не должны
+# попадать в чужой код. Тесты, бэкап БД, миграции и smoke Telegram/ClaudeHub выполняет
+# scripts/deploy_via_codespaces.sh — тот же сценарий, что и в Codespaces.
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      set_model:
+        description: "Сменить CLAUDEHUB_MODEL на сервере (например claude-haiku-5-5). Пусто — не трогать."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sushef-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.repository == 'grunvald91/Sushef'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Tests, backup, deploy, smoke
+        env:
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SUSHEF_SERVER_HOST: ${{ secrets.SUSHEF_SERVER_HOST }}
+          SERVER_HOST_KEY: ${{ secrets.SERVER_HOST_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CLAUDEHUB_API_KEY: ${{ secrets.CLAUDEHUB_API }}
+          SUSHEF_SET_MODEL: ${{ inputs.set_model }}
+        run: bash scripts/deploy_via_codespaces.sh

@@ -317,7 +317,7 @@ pytest -q
 
 Больше 200 локальных тестов без реальных ключей и обращений к ClaudeHub и Telegram: рецепты, таймеры, миграции, платежи, поддержка, inline, форматирование, безопасность протоколов.
 
-**GitHub Actions в проекте не используются** (платный ресурс): тесты и выкладка выполняются локально или на сервере.
+**GitHub Actions:** единственный workflow — ручной `Deploy` (кнопка «Run workflow», без автозапусков), см. `docs/ACTIONS_DEPLOY.md`. Репозиторий публичный: секретов и адреса сервера в нём нет.
 
 **Выкладка на сервер** через GitHub Codespaces одной явной задачей VS Code (**Terminal → Run Task → «Сушеф: Тесты + деплой на сервер 155»**): полный pytest, резервная копия базы, миграции, отдельный Docker-проект `sushef`, проверка Telegram и ClaudeHub. Автодеплоя при открытии Codespace нет. Подробно: [docs/CODESPACES_DEPLOY.md](docs/CODESPACES_DEPLOY.md), общий случай: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 

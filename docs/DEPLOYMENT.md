@@ -1,4 +1,6 @@
-# Развёртывание без GitHub Actions
+# Развёртывание
+
+> Актуальный способ — ручной workflow `Deploy`, см. [ACTIONS_DEPLOY.md](ACTIONS_DEPLOY.md). Ниже — прежняя инструкция (Codespaces / вручную).
 
 ### О хранении секретов
 
@@ -59,4 +61,4 @@ SQLite хранится в постоянном Docker volume `sushef-data`. О�
 
 ## Codespaces: запуск через задачу VS Code
 
-Для сервера `155.212.162.47` добавлен скрипт `scripts/deploy_via_codespaces.sh`, который запускается из меню **Terminal → Run Task → «Сушеф: Тесты + деплой на сервер 155»** в Codespace ветки `feat/guided-cooking-timers`. Перед обновлением выполняются Python-тесты и при наличии существующей БД — бэкап. После старта контейнера делаются Telegram getMe + один короткий ClaudeHub smoke-test. Секреты находятся в доступе Codespaces, а не только Actions. Подробности: [CODESPACES_DEPLOY.md](CODESPACES_DEPLOY.md).
+Для сервера адрес из секрета `SUSHEF_SERVER_HOST` добавлен скрипт `scripts/deploy_via_codespaces.sh`, который запускается из меню **Terminal → Run Task → «Сушеф: Тесты + деплой на сервер 155»** в Codespace ветки `feat/guided-cooking-timers`. Перед обновлением выполняются Python-тесты и при наличии существующей БД — бэкап. После старта контейнера делаются Telegram getMe + один короткий ClaudeHub smoke-test. Секреты находятся в доступе Codespaces, а не только Actions. Подробности: [CODESPACES_DEPLOY.md](CODESPACES_DEPLOY.md).
