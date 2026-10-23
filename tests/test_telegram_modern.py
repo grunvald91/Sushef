@@ -133,14 +133,17 @@ async def test_native_draft_preview_is_only_temporary():
     assert kw["draft_id"] == 153
     assert kw["can_stop"] is False
     assert not await show_chef_thinking(message, enabled=False)
+    from sushef.kitchen_phrases import RECIPE, RESCUE, _FORMS
     fake_bot.send_message_draft.reset_mock()
     assert await show_chef_thinking(
         message, mode="recipe", preferences={"address_form": "ты"})
-    assert "твой вкус" in fake_bot.send_message_draft.await_args.kwargs["text"]
+    shown = fake_bot.send_message_draft.await_args.kwargs["text"]
+    assert shown in {p.format(**_FORMS["ты"]) for p in RECIPE}
     fake_bot.send_message_draft.reset_mock()
     assert await show_chef_thinking(
         message, mode="rescue", preferences={"address_form": "вы"})
-    assert "помочь блюду" in fake_bot.send_message_draft.await_args.kwargs["text"]
+    shown = fake_bot.send_message_draft.await_args.kwargs["text"]
+    assert shown in {p.format(**_FORMS["вы"]) for p in RESCUE}
 
 
 @pytest.mark.asyncio
@@ -290,3 +293,71 @@ def test_default_model_is_haiku_and_seen_reaction_is_on():
                         _env_file=None)
     assert settings.claudehub_model == "claude-haiku-5-5"
     assert settings.telegram_seen_reaction is True
+
+
+def test_kitchen_phrases_are_varied_and_respect_address_form():
+    import random
+    from sushef import kitchen_phrases as kp
+
+    pools = (kp.RECIPE, kp.PLAN, kp.SCIENCE, kp.RESCUE, kp.PHOTO, kp.ASK)
+    for pool in pools:
+        assert len(pool) >= 3 and len(set(pool)) == len(pool)
+        for phrase in pool:
+            for form in ("ты", "вы"):
+                text = phrase.format(**kp._FORMS[form])
+                assert "{" not in text and text.endswith("…")
+                assert len(text) <= 80
+                if form == "ты":
+                    assert "Ваш" not in text and "Вас" not in text
+    assert kp.phrases_for("catalog:x") is kp.RECIPE
+    assert kp.phrases_for("weekly:1:lunch") is kp.RECIPE
+    assert kp.phrases_for("plan") is kp.PLAN
+    assert kp.phrases_for("protocol:x") is kp.SCIENCE
+    assert kp.phrases_for("ferment") is kp.SCIENCE
+    assert kp.phrases_for("photo") is kp.PHOTO
+    assert kp.phrases_for("cook") is kp.ASK
+    rng = random.Random(1)
+    previous = None
+    for _ in range(30):  # подряд одна и та же фраза не повторяется
+        phrase = kp.pick_phrase("ask", {"address_form": "ты"}, previous=previous, rng=rng)
+        assert phrase != previous
+        previous = phrase
+
+
+@pytest.mark.asyncio
+async def test_phrases_rotate_while_waiting_and_yield_to_streamed_answer():
+    import asyncio
+    from sushef.telegram_dialogue import ACTIVE_STREAMS
+    from sushef.telegram_modern import ChefWorking
+
+    message = working_message()
+    working = ChefWorking(message, mode="recipe", typing_interval=1, phrase_interval=0.01)
+    await working.start()
+    await asyncio.sleep(0.08)
+    texts = [c.kwargs["text"] for c in message.bot.send_message_draft.await_args_list]
+    assert len(texts) >= 3
+    assert all(a != b for a, b in zip(texts, texts[1:]))  # фразы сменяются
+    # начался поток ответа — фразы больше не перебивают черновик
+    ACTIVE_STREAMS[(71, 153)] = object()
+    try:
+        await asyncio.sleep(0.03)
+        count = message.bot.send_message_draft.await_count
+        await asyncio.sleep(0.05)
+        assert message.bot.send_message_draft.await_count == count
+    finally:
+        ACTIVE_STREAMS.pop((71, 153), None)
+        await working.stop()
+    await working.stop()  # повторная остановка безопасна
+
+
+@pytest.mark.asyncio
+async def test_no_phrase_rotation_when_draft_is_unavailable():
+    import asyncio
+    from sushef.telegram_modern import ChefWorking
+
+    message = working_message(send_message_draft=AsyncMock(side_effect=AttributeError("old api")))
+    working = ChefWorking(message, typing_interval=1, phrase_interval=0.01)
+    await working.start()
+    await asyncio.sleep(0.05)
+    assert message.bot.send_message_draft.await_count == 1  # одна попытка, без долбёжки
+    await working.stop()
