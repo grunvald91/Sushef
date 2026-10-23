@@ -270,3 +270,17 @@ def test_italic_and_links_are_not_shown_as_raw_markup():
 
 def test_new_sentence_after_cut_gets_a_space():
     assert join_continuation("Всё готово", "Теперь подавайте") == "Всё готово Теперь подавайте"
+
+
+def test_prompt_recommends_compact_answers_without_losing_precision():
+    text = build_system("ask", {"address_form": "вы"})
+    assert "ответ ближе к компактному" in text
+    assert "Компактность не должна съедать точные количества" in text
+
+
+@pytest.mark.asyncio
+async def test_long_answers_are_stored_in_history_without_cutting(tmp_path):
+    from sushef.storage import Storage
+    import inspect
+    source = inspect.getsource(Storage.add_exchange)
+    assert "[:6000]" not in source and "reply[" not in source
