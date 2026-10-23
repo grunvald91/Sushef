@@ -16,7 +16,7 @@ from html import escape
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardMarkup, InputRichMessage, Message
 
-from .rich_blocks import markdown_to_blocks, needs_blocks
+from .rich_blocks import buttons_block, markdown_to_blocks, needs_blocks
 from .telegram_format import telegram_chunks
 
 logger = logging.getLogger(__name__)
@@ -93,22 +93,38 @@ async def send_dialogue(
     markup: InlineKeyboardMarkup | None = None,
     *,
     rich_enabled: bool = True,
+    inline_buttons: list[tuple[str, str, str | None]] | None = None,
+    rich_markup: InlineKeyboardMarkup | None = None,
 ) -> str:
-    """Use native rich layout on substantive AI replies and HTML otherwise."""
+    """Use native rich layout on substantive AI replies and HTML otherwise.
+
+    inline_buttons — кнопки внутри самого rich-сообщения (перед разделом советов).
+    Если они реально вошли в сообщение, под ним показывается rich_markup (короче
+    основной клавиатуры); в остальных случаях — полная клавиатура markup.
+    """
     prepared = structure_culinary_answer(answer) or "Не удалось сформировать ответ. Попробуем ещё раз?"
     if rich_enabled and 120 <= len(prepared) <= 28000:
         try:
-            # Таблицы и списки с галочками — нативными блоками; остальное Rich Markdown.
+            # Таблицы, галочки, раскрывающиеся советы и цитаты — нативными блоками.
             rich = None
-            if needs_blocks(prepared):
+            under_markup = markup
+            if inline_buttons or needs_blocks(prepared):
                 try:
-                    rich = InputRichMessage(blocks=markdown_to_blocks(prepared))
+                    blocks = markdown_to_blocks(prepared)
+                    if inline_buttons:
+                        at = next((n for n, block in enumerate(blocks)
+                                   if type(block).__name__ == "InputRichBlockDetails"), len(blocks))
+                        blocks.insert(at, buttons_block(inline_buttons))
+                        if rich_markup is not None:
+                            under_markup = rich_markup
+                    rich = InputRichMessage(blocks=blocks)
                 except ValueError:
                     rich = None
+                    under_markup = markup
             if rich is None:
                 rich = InputRichMessage(markdown=rich_dialog_markdown(prepared))
             await message.bot.send_rich_message(
-                chat_id=message.chat.id, rich_message=rich, reply_markup=markup,
+                chat_id=message.chat.id, rich_message=rich, reply_markup=under_markup,
             )
             return "rich"
         except TelegramBadRequest as exc:
@@ -129,6 +145,25 @@ def culinary_answer_has_recipe(text: str) -> bool:
     ingredients = bool(re.search(r"(?im)^(?:#{1,4}\s*)?(?:🥗\s*)?(?:продукты|ингредиенты)\b", normal))
     steps = len(re.findall(r"(?m)^\d{1,2}[.)]\s+", normal))
     return ingredients and steps >= 2
+
+
+_INGREDIENTS_HEADING = re.compile(r"^#{1,4}\s*(?:🥗\s*)?(?:продукты|ингредиенты)\b", re.IGNORECASE)
+
+
+def dialogue_shopping_items(answer: str) -> list[str]:
+    """Строки раздела «Продукты» из ответа шефа, без выдумывания и пересчёта."""
+    items: list[str] = []
+    inside = False
+    for line in structure_culinary_answer(answer).split("\n"):
+        line = line.strip()
+        if line.startswith("#"):
+            inside = bool(_INGREDIENTS_HEADING.match(line))
+            continue
+        if inside and line.startswith("- "):
+            text = re.sub(r"^-\s*(?:\[[ xX]\]\s*)?", "", line).replace("**", "").strip()
+            if text:
+                items.append(text)
+    return items[:40]
 
 
 def recipe_context_tag(question: str) -> str:

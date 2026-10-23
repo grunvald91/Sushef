@@ -69,7 +69,10 @@ async def test_regular_chat_uses_native_rich_message_not_old_plain_path():
     call = bot.send_rich_message.await_args.kwargs
     assert call["reply_markup"] is markup
     assert call["chat_id"] == 456
-    assert "## 👨‍🍳 Как приготовить" in call["rich_message"].markdown
+    blocks = call["rich_message"].blocks  # советы сворачиваются, поэтому ответ идёт нативными блоками
+    names = [type(block).__name__ for block in blocks]
+    assert "InputRichBlockDetails" in names
+    assert "Как приготовить" in str(blocks)
     message.answer.assert_not_awaited()
 
 
@@ -147,7 +150,9 @@ async def test_ai_question_in_ordinary_ask_mode_really_calls_rich_dialogue():
     await text_message(message, storage, chef, settings)
     chef.answer.assert_awaited_once()
     bot.send_rich_message.assert_awaited_once()
-    assert "Горбуша" in bot.send_rich_message.await_args.kwargs["rich_message"].markdown
+    sent = bot.send_rich_message.await_args.kwargs["rich_message"]
+    assert "Горбуша" in str(sent.blocks)
+    assert any(type(block).__name__ == "InputRichBlockButtons" for block in sent.blocks)  # покупки и карточка внутри
     storage.add_exchange.assert_awaited_once()
 
 
