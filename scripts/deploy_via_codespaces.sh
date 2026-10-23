@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Run from a Sushef GitHub Codespace on fix/rich-dialog-real-answers-20261010.
-# Tests run in Codespaces; deployment goes over SSH to 155.212.162.47.
-# NO GitHub Actions and no interaction with ServGo / AI Growth OS.
+# Run from a Sushef GitHub Codespace, or from the manual "Deploy" GitHub Actions
+# workflow (.github/workflows/deploy.yml, workflow_dispatch only).
+# Tests run first; deployment goes over SSH to the server in SUSHEF_SERVER_HOST.
+# No interaction with ServGo / AI Growth OS.
 set -Eeuo pipefail
 umask 077
 
@@ -11,15 +12,32 @@ command -v git >/dev/null || die "Git is missing."
 command -v python3 >/dev/null || die "Python 3 is missing."
 command -v ssh >/dev/null || die "SSH client is missing."
 command -v scp >/dev/null || die "SCP client is missing."
+# Вход по паролю (если задан SSHPASS, например секрет SERVER_SSH_PASSWORD в BookingBot):
+# пароль передаётся только через переменную окружения, в командах и логах его нет.
+if [ -n "${SSHPASS:-}" ]; then
+  command -v sshpass >/dev/null || die "SSHPASS is set but sshpass is not installed."
+  ssh() { command sshpass -e ssh "$@"; }
+  scp() { command sshpass -e scp "$@"; }
+  batch_mode=no
+  auth_opts=(-o PreferredAuthentications=password -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1)
+else
+  batch_mode=yes
+  auth_opts=()
+fi
 
 project="$(git rev-parse --show-toplevel 2>/dev/null)" || die "Run inside grunvald91/Sushef."
 cd "$project"
 [ "$(basename "$project")" = Sushef ] || die "Open the grunvald91/Sushef Codespace (not Ai_growth_os)."
-branch="$(git symbolic-ref -q --short HEAD)" || die "Checkout a branch rather than a detached HEAD."
-case "$branch" in
-  fix/rich-dialog-real-answers-20261010|ccr-8c667ece-klncov) ;;
-  *) die "Switch to fix/rich-dialog-real-answers-20261010 or ccr-8c667ece-klncov (support + Stars) before deployment." ;;
-esac
+if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+  # В Actions checkout работает в detached HEAD; ветку выбирает человек, нажавший «Run workflow».
+  branch="${GITHUB_REF_NAME:?}"
+else
+  branch="$(git symbolic-ref -q --short HEAD)" || die "Checkout a branch rather than a detached HEAD."
+  case "$branch" in
+    fix/rich-dialog-real-answers-20261010|ccr-8c667ece-klncov|feat/thinking-indicator-haiku|main) ;;
+    *) die "Switch to main (or a reviewed release branch) before deployment." ;;
+  esac
+fi
 [ -z "$(git status --porcelain)" ] || die "Commit/stash your local changes before deploying the exact committed SHA."
 sha="$(git rev-parse HEAD)"
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "Invalid commit SHA"
@@ -27,7 +45,8 @@ sha="$(git rev-parse HEAD)"
 # Parse both scripts before any SSH or server side effects.
 bash -n scripts/deploy_via_codespaces.sh scripts/remote_sushef_apply.sh || die "Invalid Bash syntax."
 
-host="${SUSHEF_SERVER_HOST:-155.212.162.47}"
+host="${SUSHEF_SERVER_HOST:-}"
+[ -n "$host" ] || die "Set the SUSHEF_SERVER_HOST secret (server address); it is intentionally not stored in the repository."
 user="${SUSHEF_SERVER_USER:-root}"
 port="${SUSHEF_SERVER_PORT:-22}"
 [[ "$host" =~ ^[A-Za-z0-9.:-]+$ ]] || die "Invalid server hostname."
@@ -43,7 +62,7 @@ fi
 PYTHONPATH="$project/src" "$venv/bin/python" -m compileall -q src tests migrations
 PYTHONPATH="$project/src" "$venv/bin/python" -m pytest -q
 PYTHONPATH="$project/src" "$venv/bin/python" scripts/audit_professional_cards.py
-say "Unit tests passed; no GitHub Actions minutes used."
+say "Unit tests passed."
 
 tmp="$(mktemp -d)"
 chmod 700 "$tmp"
@@ -54,16 +73,28 @@ if [ -n "${SERVER_SSH_KEY:-}" ]; then
   chmod 600 "$tmp/server_id"
   key_arg=(-i "$tmp/server_id")
 else
-  say "SERVER_SSH_KEY absent: trying SSH agent / preconfigured Codespaces identity."
+  [ -n "${SSHPASS:-}" ] && say "Using password login (SSHPASS)." ||
+    say "SERVER_SSH_KEY absent: trying SSH agent / preconfigured Codespaces identity."
 fi
 
 mkdir -p "$HOME/.ssh"
 chmod 700 "$HOME/.ssh"
-# accept-new is TOFU; previously-pinned host key changes will be rejected.
-ssh_opts=(-p "$port" -o BatchMode=yes -o ConnectTimeout=12
-          -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$HOME/.ssh/known_hosts")
-scp_opts=(-P "$port" -o BatchMode=yes -o ConnectTimeout=12
-          -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$HOME/.ssh/known_hosts")
+# Если задан SERVER_HOST_KEY (строка known_hosts сервера), отпечаток закрепляется и любая
+# подмена сервера отклоняется. Без него действует accept-new (TOFU): на «свежем» раннере
+# Actions это значит «доверять первому увиденному ключу» — закрепите отпечаток.
+if [ -n "${SERVER_HOST_KEY:-}" ]; then
+  printf '%s\n' "$SERVER_HOST_KEY" > "$HOME/.ssh/known_hosts"
+  chmod 600 "$HOME/.ssh/known_hosts"
+  host_check=yes
+  say "Server host key is pinned from SERVER_HOST_KEY."
+else
+  host_check=accept-new
+  say "SERVER_HOST_KEY not set: the server host key is trusted on first use."
+fi
+ssh_opts=(-p "$port" -o BatchMode="$batch_mode" -o ConnectTimeout=12 "${auth_opts[@]}"
+          -o StrictHostKeyChecking="$host_check" -o UserKnownHostsFile="$HOME/.ssh/known_hosts")
+scp_opts=(-P "$port" -o BatchMode="$batch_mode" -o ConnectTimeout=12 "${auth_opts[@]}"
+          -o StrictHostKeyChecking="$host_check" -o UserKnownHostsFile="$HOME/.ssh/known_hosts")
 if [ "${#key_arg[@]}" -gt 0 ]; then
   ssh_opts+=("${key_arg[@]}")
   scp_opts+=("${key_arg[@]}")
@@ -72,7 +103,7 @@ fi
 remote="$user@$host"
 say "Checking SSH to $user@$host (no secrets printed)..."
 ssh "${ssh_opts[@]}" "$remote" 'test "$(id -u)" -eq 0 && docker compose version >/dev/null' ||
-  die "Server SSH/Docker unavailable. Check Codespaces secret SERVER_SSH_KEY and authorized_keys."
+  die "Server SSH/Docker unavailable. Check the SSH key (SERVER_SSH_KEY) or password (SSHPASS) and the server address."
 
 say "Checking the isolated Sushef directory on the server..."
 ssh "${ssh_opts[@]}" "$remote" \
@@ -105,7 +136,7 @@ from pathlib import Path
 
 token = os.environ["TELEGRAM_BOT_TOKEN"].strip()
 key = os.environ["CLAUDEHUB_API_KEY"].strip()
-model = os.environ.get("CLAUDEHUB_MODEL", "claude-opus-4-7").strip()
+model = os.environ.get("CLAUDEHUB_MODEL", "claude-haiku-5-5").strip()
 url = os.environ.get("CLAUDEHUB_BASE_URL", "https://api.claudehub.fun").strip()
 password = os.environ.get("POSTGRES_PASSWORD", "").strip() or (
     secrets.token_hex(28)
@@ -143,6 +174,17 @@ PY
   ssh "${ssh_opts[@]}" "$remote" \
       "set -eu; umask 077; test ! -e /opt/sushef/shared/.env; mv /opt/sushef/shared/.env.incoming-$sha /opt/sushef/shared/.env; chmod 600 /opt/sushef/shared/.env" ||
       die "Could not securely install server environment."
+fi
+
+# Необязательно: сменить модель в УЖЕ существующем серверном .env (он иначе не переписывается).
+if [ -n "${SUSHEF_SET_MODEL:-}" ]; then
+  [[ "$SUSHEF_SET_MODEL" =~ ^[A-Za-z0-9._:-]+$ ]] || die "Unsafe model identifier."
+  say "Setting CLAUDEHUB_MODEL=$SUSHEF_SET_MODEL in the server .env (a copy of the old file is kept)."
+  ssh "${ssh_opts[@]}" "$remote" "set -eu; f=/opt/sushef/shared/.env; test -s \$f;
+    cp -p \$f \$f.before-model-$sha;
+    if grep -q '^CLAUDEHUB_MODEL=' \$f; then sed -i 's|^CLAUDEHUB_MODEL=.*|CLAUDEHUB_MODEL=$SUSHEF_SET_MODEL|' \$f;
+    else printf 'CLAUDEHUB_MODEL=%s\n' '$SUSHEF_SET_MODEL' >> \$f; fi" ||
+    die "Could not update CLAUDEHUB_MODEL on the server."
 fi
 
 # Archive the committed branch, not the Codespace worktree and not other repos.

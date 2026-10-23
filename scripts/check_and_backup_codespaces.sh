@@ -17,7 +17,7 @@ bash -n scripts/check_and_backup_codespaces.sh || die "Bash syntax error"
 say "Preparing independent server-side backup before any test run or deployment."
 
 
-host="${SUSHEF_SERVER_HOST:-155.212.162.47}"
+host="${SUSHEF_SERVER_HOST:?Set the SUSHEF_SERVER_HOST secret (server address)}"
 port="${SUSHEF_SERVER_PORT:-22}"
 user="${SUSHEF_SERVER_USER:-root}"
 [[ "$host" =~ ^[A-Za-z0-9.:-]+$ ]] || die "Invalid SSH host"

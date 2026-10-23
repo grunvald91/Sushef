@@ -9,13 +9,14 @@ class Settings(BaseSettings):
     telegram_proxy_url: str | None = None
     claudehub_api_key: str = Field(min_length=8)
     claudehub_base_url: str = "https://api.claudehub.fun"
-    claudehub_model: str = "claude-opus-4-7"
+    claudehub_model: str = "claude-haiku-5-5"
     database_url: str = "sqlite+aiosqlite:///./sushef.db"
     max_output_tokens: int = Field(default=1300, ge=256, le=4096)
     daily_ai_limit: int = Field(default=25, ge=1, le=1000)
     max_input_chars: int = Field(default=3500, ge=200, le=12000)
     telegram_rich_recipe_cards: bool = True  # Bot API 10.3; HTML fallback on unsupported server
     telegram_draft_preview: bool = True  # Bot API 9.5; non-streaming temporary preview
+    telegram_seen_reaction: bool = True  # мгновенная реакция 👀 на сообщение: «Сушеф услышал»
     telegram_stream_answers: bool = True  # Bot API 10.3 sendRichMessageDraft: ответ по мере генерации
     vision_enabled: bool = False  # Включать лишь после проверки vision у ClaudeHub
     max_photo_bytes: int = Field(default=4000000, ge=100000, le=8000000)

@@ -7,13 +7,15 @@ retry automatically, avoiding duplicate recipes.
 """
 from __future__ import annotations
 
+import asyncio
 from html import escape
 import logging
 
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
-from aiogram.types import BotCommand, InputRichMessage, InlineKeyboardMarkup, Message
+from aiogram.types import BotCommand, InputRichMessage, InlineKeyboardMarkup, Message, ReactionTypeEmoji
 
 from .chef import format_recipe
+from .kitchen_phrases import pick_phrase
 from .telegram_format import telegram_chunks
 
 logger = logging.getLogger(__name__)
@@ -92,30 +94,20 @@ async def send_recipe_card(
         )
 
 
-async def show_chef_thinking(message: Message, *, enabled: bool = True, mode: str = "ask", preferences: dict | None = None) -> bool:
+async def show_chef_thinking(message: Message, *, enabled: bool = True, mode: str = "ask",
+                             preferences: dict | None = None, text: str | None = None) -> bool:
     """Temporary Telegram draft while ClaudeHub prepares a full final answer.
 
     Does NOT claim token-by-token streaming. A real, persistent answer always
     follows through send_text/send_recipe_card. Draft failures don't fail AI.
+    Текст — живая кулинарная фраза из kitchen_phrases (или переданная явно).
     """
     if not enabled or message.chat.type != "private":
         return False
     draft_id = getattr(message, "message_id", None)
     if type(draft_id) is not int or draft_id <= 0:
         return False
-    prefs = preferences or {}
-    informal = prefs.get("address_form") == "ты"
-    possessive = "твой" if informal else "Ваш"
-    if mode in {"recipe", "pantry_recipe"} or mode.startswith(("catalog:", "weekly:")):
-        preview = f"👨‍🍳 Бережно подбираю рецепт под {possessive} вкус…"
-    elif mode == "plan":
-        preview = f"📅 Составляю меню с учётом {('твоих' if informal else 'Ваших')} пожеланий…"
-    elif mode.startswith(("ferment:", "science:", "protocol:")):
-        preview = "🔬 Проверяю технологические детали…"
-    elif mode == "rescue":
-        preview = "🛠 Ищу способ помочь блюду…"
-    else:
-        preview = "👨‍🍳 Обдумываю ответ с вниманием к деталям…"
+    preview = text or pick_phrase(mode, preferences)
     try:
         await message.bot.send_message_draft(
             chat_id=message.chat.id,
@@ -126,8 +118,114 @@ async def show_chef_thinking(message: Message, *, enabled: bool = True, mode: st
         )
         return True
     except (TelegramAPIError, AttributeError) as exc:
-        logger.debug("Temporary draft unavailable: %s", type(exc).__name__)
+        # warning, а не debug: иначе в проде не видно, что «думаю…» не доходит до людей
+        logger.warning("Temporary draft unavailable: %s: %s", type(exc).__name__, exc)
         return False
+
+
+class ChefWorking:
+    """Видимый сигнал «Сушеф услышал и работает» на всё время ожидания ИИ.
+
+    Три независимых сигнала, любой из них может не сработать, ответ от этого
+    не страдает (это украшение, а не часть ответа):
+    * реакция 👀 на сообщение пользователя — мгновенно, снимается, когда ответ готов;
+    * черновик с живой кулинарной фразой («🔪 Точу ножи…»), которая сменяется
+      каждые несколько секунд, пока ответ готовится. Как только ClaudeHub
+      начинает отдавать текст потоком, черновик с тем же draft_id занимает
+      поток ответа, и фразы больше не перебивают его;
+    * «печатает…», которое поддерживается заново, пока ИИ не ответил: Telegram
+      гасит его через несколько секунд, а рецепты и меню готовятся дольше.
+    stop() вызывается сразу, как модель ответила, ДО отправки ответа, иначе
+    статус или фраза могли бы мелькнуть уже под готовым ответом. Повторный
+    stop() безопасен. Ничего не повторяется автоматически с отправкой
+    сообщений — только статусы.
+    """
+
+    def __init__(self, message: Message, *, mode: str = "ask", preferences: dict | None = None,
+                 draft_enabled: bool = True, reaction_enabled: bool = True,
+                 typing_interval: float = 4.0, phrase_interval: float = 5.0):
+        self.message = message
+        self.mode = mode
+        self.preferences = preferences
+        self.draft_enabled = draft_enabled
+        self.reaction_enabled = reaction_enabled
+        self.typing_interval = typing_interval
+        self.phrase_interval = phrase_interval
+        self._tasks: list[asyncio.Task] = []
+        self._reacted = False
+        self._phrase: str | None = None
+
+    async def start(self) -> None:
+        self._tasks.append(asyncio.create_task(self._keep_typing()))
+        await asyncio.gather(self._react(), self._draft())
+        if self._phrase is not None:  # черновик работает — меняем фразы дальше
+            self._tasks.append(asyncio.create_task(self._rotate_phrases()))
+
+    async def stop(self) -> None:
+        tasks, self._tasks = self._tasks, []
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if self._reacted:
+            self._reacted = False
+            try:
+                await self.message.bot.set_message_reaction(
+                    chat_id=self.message.chat.id, message_id=self.message.message_id, reaction=[])
+            except Exception as exc:
+                logger.warning("Seen reaction was not cleared: %s: %s", type(exc).__name__, exc)
+
+    async def _keep_typing(self) -> None:
+        try:
+            while True:
+                await self.message.bot.send_chat_action(self.message.chat.id, "typing")
+                await asyncio.sleep(self.typing_interval)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Typing status stopped: %s: %s", type(exc).__name__, exc)
+
+    async def _react(self) -> None:
+        sender = getattr(self.message, "from_user", None)
+        # Реагируем только на сообщение человека, а не на собственное сообщение бота с кнопкой.
+        if not self.reaction_enabled or sender is None or getattr(sender, "is_bot", False):
+            return
+        try:
+            if self.message.chat.type != "private":
+                return
+            await self.message.bot.set_message_reaction(
+                chat_id=self.message.chat.id, message_id=self.message.message_id,
+                reaction=[ReactionTypeEmoji(emoji="👀")])
+            self._reacted = True
+        except Exception as exc:
+            logger.warning("Seen reaction unavailable: %s: %s", type(exc).__name__, exc)
+
+    async def _draft(self) -> bool:
+        phrase = pick_phrase(self.mode, self.preferences, previous=self._phrase)
+        try:
+            shown = await show_chef_thinking(self.message, enabled=self.draft_enabled,
+                                             mode=self.mode, preferences=self.preferences,
+                                             text=phrase)
+        except Exception as exc:
+            logger.warning("Thinking draft failed: %s: %s", type(exc).__name__, exc)
+            shown = False
+        if shown:
+            self._phrase = phrase
+        return shown
+
+    def _answer_is_streaming(self) -> bool:
+        from .telegram_dialogue import ACTIVE_STREAMS
+        key = (self.message.chat.id, getattr(self.message, "message_id", None))
+        return key in ACTIVE_STREAMS
+
+    async def _rotate_phrases(self) -> None:
+        while True:
+            await asyncio.sleep(self.phrase_interval)
+            # Поток ответа уже занял черновик — фразы ему не мешают.
+            if self._answer_is_streaming():
+                return
+            if not await self._draft():
+                return
 
 
 PUBLIC_COMMANDS = (

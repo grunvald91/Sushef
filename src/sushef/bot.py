@@ -26,7 +26,7 @@ from .technique_catalog import CATEGORIES, technique_context
 from .dish_process_cards_v2 import scale_source_ingredients
 from .config import Settings
 from .telegram_format import telegram_chunks
-from .telegram_modern import send_recipe_card, show_chef_thinking
+from .telegram_modern import ChefWorking, send_recipe_card
 from .telegram_dialogue import DraftStreamer, GenerationStopped, send_dialogue, stop_stream, culinary_answer_has_recipe, recipe_context_tag
 from .conversation_quality import correct_egg_followup
 from .storage import Storage
@@ -1238,9 +1238,11 @@ async def inspect_photo(message: Message, storage: Storage, chef: Chef, settings
                                       "На сегодня лимит запросов к ИИ исчерпан.")
     if not access:
         return
+    working = ChefWorking(message, mode="photo",
+                          draft_enabled=settings.telegram_draft_preview,
+                          reaction_enabled=settings.telegram_seen_reaction)
+    await working.start()
     try:
-        await message.bot.send_chat_action(message.chat.id, "typing")
-        await show_chef_thinking(message, enabled=settings.telegram_draft_preview, mode="ask")
         stream = await message.bot.download(size)
         if stream is None or not hasattr(stream, "getvalue"):
             raise RuntimeError("Telegram не предоставил изображение")
@@ -1250,6 +1252,7 @@ async def inspect_photo(message: Message, storage: Storage, chef: Chef, settings
             return
         user = await storage.get_user(message.from_user.id)
         result = await chef.inspect_photo(data, message.caption or "", user["preferences"])
+        await working.stop()
         await send_text(message, "📷 Посмотрим, что у нас на фотографии! "
                         "Проверьте распознанные продукты: я пока ничего не добавлял в запасы.\n\n"
                         + result,
@@ -1261,6 +1264,8 @@ async def inspect_photo(message: Message, storage: Storage, chef: Chef, settings
         logger.warning("Optional vision request failed: %s", type(exc).__name__)
         await send_text(message, "📷 Пока не удалось разобрать фото. Возможно, модель "
                         "ClaudeHub не поддерживает изображения. Опишите продукты текстом.", main_keyboard())
+    finally:
+        await working.stop()
 
 
 @router.message(F.voice | F.video | F.audio | F.document)
@@ -1555,8 +1560,11 @@ async def culinary_request(message: Message, from_user: User, text: str, mode: s
     if not access:
         return
 
+    working = ChefWorking(message, mode=mode, preferences=preferences,
+                          draft_enabled=settings.telegram_draft_preview,
+                          reaction_enabled=settings.telegram_seen_reaction)
+    await working.start()
     try:
-        await message.bot.send_chat_action(message.chat.id, "typing")
         if mode in {"recipe", "pantry_recipe"} or mode.startswith(("weekly:", "catalog:")):
             reference = None
             if mode.startswith("catalog:"):
@@ -1605,6 +1613,7 @@ async def culinary_request(message: Message, from_user: User, text: str, mode: s
                           "но не подтверждают весь новый рецепт):\n" +
                           technique_context(matching_techniques))
             recipe = await chef.recipe(query, preferences)
+            await working.stop()  # ответ готов: статусы не должны мелькнуть под ним
             if matching_techniques:
                 top = matching_techniques[0]
                 recipe["technique_reference"] = {
@@ -1630,6 +1639,7 @@ async def culinary_request(message: Message, from_user: User, text: str, mode: s
             )
         elif mode == "plan":
             plan = await chef.weekly_plan(text, preferences, await storage.pantry(user_id))
+            await working.stop()
             await storage.save_weekly_plan(user_id, plan)
             await storage.add_exchange(
                 user_id, text, "Составлено недельное меню на 7 дней. "
@@ -1695,6 +1705,7 @@ async def culinary_request(message: Message, from_user: User, text: str, mode: s
                     answer = await chef.answer(mode, ai_text, preferences, history, context)
             except GenerationStopped as stop:
                 answer = (stop.partial.rstrip() or "…") + "\n\n⏹ Остановлено по Вашей просьбе."
+            await working.stop()
             await storage.add_exchange(user_id, text, answer)
             if mode in {"ask", "rescue"} and culinary_answer_has_recipe(answer):
                 response_markup = dialogue_recipe_keyboard(recipe_context_tag(text))
@@ -1719,6 +1730,8 @@ async def culinary_request(message: Message, from_user: User, text: str, mode: s
             "Ваши настройки сохранены.",
             main_keyboard(),
         )
+    finally:
+        await working.stop()
 
 
 def find_dialogue_answer(history: list[dict[str, str]], tag: str) -> tuple[str, str] | None:
@@ -1774,10 +1787,14 @@ async def save_dialogue_recipe(
         return
     question, answer = found
     prefs = (await storage.get_user(user_id))["preferences"]
+    working = ChefWorking(message, mode="recipe", preferences=prefs,
+                          draft_enabled=settings.telegram_draft_preview,
+                          reaction_enabled=settings.telegram_seen_reaction)
+    await working.start()
     try:
-        await message.bot.send_chat_action(message.chat.id, "typing")
         recipe = await chef.recipe(SUMMARY_PROMPT + question[:1500] +
                                    "\nСовет шефа:\n" + answer[:5000], prefs)
+        await working.stop()
     except RecipeFormatError:
         await send_text(message, "Не получилось аккуратно сжать этот рецепт. "
                         "Попробуйте ещё раз чуть позже.", main_keyboard())
@@ -1787,6 +1804,8 @@ async def save_dialogue_recipe(
         await send_text(message, "Сейчас не удалось сохранить рецепт. Попробуйте позже.",
                         main_keyboard())
         return
+    finally:
+        await working.stop()
     recipe["dialogue_tag"] = tag
     archive_id = await storage.store_recipe(user_id, recipe, favorite=favorite)
     await send_text(message, ("❤️ Выжимка рецепта сохранена в избранное и «Мои рецепты»."
@@ -1892,9 +1911,13 @@ async def convert_dialogue_to_recipe(
         "\nПредыдущий ответ (черновик, не авторитетный источник):\n" +
         last_answer[:4500]
     )
+    working = ChefWorking(message, mode="recipe", preferences=prefs,
+                          draft_enabled=settings.telegram_draft_preview,
+                          reaction_enabled=settings.telegram_seen_reaction)
+    await working.start()
     try:
-        await message.bot.send_chat_action(message.chat.id, "typing")
         recipe = await chef.recipe(source, prefs)
+        await working.stop()
         archive_id = await storage.set_recipe(callback.from_user.id, recipe)
         await storage.add_exchange(
             callback.from_user.id, "Оформить последний ответ как техкарту",
@@ -1914,6 +1937,8 @@ async def convert_dialogue_to_recipe(
         logger.warning("Recipe conversion failed: %s", type(exc).__name__)
         await send_text(message, "Сейчас не удалось оформить карточку. "
                         "Ваши рецепты и настройки не потеряны.", main_keyboard())
+    finally:
+        await working.stop()
 
 
 @router.callback_query()

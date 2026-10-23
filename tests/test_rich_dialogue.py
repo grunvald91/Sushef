@@ -139,7 +139,7 @@ async def test_ai_question_in_ordinary_ask_mode_really_calls_rich_dialogue():
     settings = SimpleNamespace(
         max_input_chars=3500, daily_ai_limit=25,
         telegram_draft_preview=False, telegram_rich_recipe_cards=True,
-        telegram_stream_answers=False,
+        telegram_stream_answers=False, telegram_seen_reaction=False,
         support_admin_id_set=frozenset(), payment_exempt_id_set=frozenset(),
         support_admin_username="grunvald", payments_enabled=True,
         free_trial_requests=10, stars_price=100, subscription_days=30,
@@ -197,6 +197,7 @@ async def test_free_chat_recipe_conversion_uses_own_last_answer_not_generic_prom
     chef = SimpleNamespace(recipe=AsyncMock(return_value=recipe))
     settings = SimpleNamespace(
         daily_ai_limit=25, telegram_rich_recipe_cards=True,
+        telegram_draft_preview=False, telegram_seen_reaction=False,
         support_admin_id_set=frozenset(), payment_exempt_id_set=frozenset(),
         support_admin_username="grunvald", payments_enabled=True,
         free_trial_requests=10, stars_price=100, subscription_days=30,

@@ -35,7 +35,7 @@ def settings(**kw):
     values = dict(telegram_bot_token="123456:test-token", claudehub_api_key="sk-test-key",
                   payment_exempt_ids="", support_admin_username="",
                   telegram_rich_recipe_cards=False, telegram_draft_preview=False,
-                  telegram_stream_answers=False)
+                  telegram_stream_answers=False, telegram_seen_reaction=False)
     values.update(kw)
     return Settings(_env_file=None, **values)
 
