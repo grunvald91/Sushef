@@ -12,6 +12,18 @@ command -v git >/dev/null || die "Git is missing."
 command -v python3 >/dev/null || die "Python 3 is missing."
 command -v ssh >/dev/null || die "SSH client is missing."
 command -v scp >/dev/null || die "SCP client is missing."
+# Вход по паролю (если задан SSHPASS, например секрет SERVER_SSH_PASSWORD в BookingBot):
+# пароль передаётся только через переменную окружения, в командах и логах его нет.
+if [ -n "${SSHPASS:-}" ]; then
+  command -v sshpass >/dev/null || die "SSHPASS is set but sshpass is not installed."
+  ssh() { command sshpass -e ssh "$@"; }
+  scp() { command sshpass -e scp "$@"; }
+  batch_mode=no
+  auth_opts=(-o PreferredAuthentications=password -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1)
+else
+  batch_mode=yes
+  auth_opts=()
+fi
 
 project="$(git rev-parse --show-toplevel 2>/dev/null)" || die "Run inside grunvald91/Sushef."
 cd "$project"
@@ -61,7 +73,8 @@ if [ -n "${SERVER_SSH_KEY:-}" ]; then
   chmod 600 "$tmp/server_id"
   key_arg=(-i "$tmp/server_id")
 else
-  say "SERVER_SSH_KEY absent: trying SSH agent / preconfigured Codespaces identity."
+  [ -n "${SSHPASS:-}" ] && say "Using password login (SSHPASS)." ||
+    say "SERVER_SSH_KEY absent: trying SSH agent / preconfigured Codespaces identity."
 fi
 
 mkdir -p "$HOME/.ssh"
@@ -78,9 +91,9 @@ else
   host_check=accept-new
   say "SERVER_HOST_KEY not set: the server host key is trusted on first use."
 fi
-ssh_opts=(-p "$port" -o BatchMode=yes -o ConnectTimeout=12
+ssh_opts=(-p "$port" -o BatchMode="$batch_mode" -o ConnectTimeout=12 "${auth_opts[@]}"
           -o StrictHostKeyChecking="$host_check" -o UserKnownHostsFile="$HOME/.ssh/known_hosts")
-scp_opts=(-P "$port" -o BatchMode=yes -o ConnectTimeout=12
+scp_opts=(-P "$port" -o BatchMode="$batch_mode" -o ConnectTimeout=12 "${auth_opts[@]}"
           -o StrictHostKeyChecking="$host_check" -o UserKnownHostsFile="$HOME/.ssh/known_hosts")
 if [ "${#key_arg[@]}" -gt 0 ]; then
   ssh_opts+=("${key_arg[@]}")
@@ -90,7 +103,7 @@ fi
 remote="$user@$host"
 say "Checking SSH to $user@$host (no secrets printed)..."
 ssh "${ssh_opts[@]}" "$remote" 'test "$(id -u)" -eq 0 && docker compose version >/dev/null' ||
-  die "Server SSH/Docker unavailable. Check Codespaces secret SERVER_SSH_KEY and authorized_keys."
+  die "Server SSH/Docker unavailable. Check the SSH key (SERVER_SSH_KEY) or password (SSHPASS) and the server address."
 
 say "Checking the isolated Sushef directory on the server..."
 ssh "${ssh_opts[@]}" "$remote" \
