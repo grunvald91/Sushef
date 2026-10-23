@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 from typing import Any
 
-from anthropic import AsyncAnthropic
+from anthropic import APIError, AsyncAnthropic
 
 from .config import Settings
 from .prompts import RECIPE_JSON, build_system
@@ -12,8 +13,45 @@ from .weekly import WEEKLY_JSON, normalize_weekly_plan
 from .timers import normalize_step_timers, suggested_timer
 
 
+logger = logging.getLogger(__name__)
+
+# Если ответ упёрся в лимит длины, Сушеф дописывает его сам: человек не должен
+# видеть рецепт, оборванный на полуслове.
+MAX_CONTINUATIONS = 2
+CONTINUE_PROMPT = (
+    "Твой предыдущий ответ оборвался из-за ограничения длины. Продолжи его ровно с того места, "
+    "где он закончился, без вступления, без извинений и без повторов уже написанного. "
+    "Если оборвалось посреди слова — начни с недостающих букв этого слова; если на границе слов — "
+    "начни с пробела или перевода строки. Сохрани структуру и нумерацию, доведи рецепт до конца "
+    "и закончи тёплой фразой с вопросом, как задумано."
+)
+_SENTENCE_END = "." + "!?…»)\n"
+
+
 class RecipeFormatError(ValueError):
     pass
+
+
+def join_continuation(head: str, tail: str) -> str:
+    """Склеить обрыв и продолжение: слово, оборванное посередине, дописывается без пробела."""
+    if not tail:
+        return head
+    if not head or head[-1].isspace() or tail[0].isspace():
+        return head + tail
+    if head[-1].isalnum() and tail[0].isalnum() and not tail[0].isupper():
+        return head + tail  # оборвалось посреди слова: продолжение начинается с недостающих букв
+    if tail[0] in ".,;:!?)»…":
+        return head + tail
+    return head + " " + tail
+
+
+def trim_incomplete_tail(text: str) -> str:
+    """Если ответ всё же остался оборванным, убрать недописанный хвост до конца предложения."""
+    stripped = text.rstrip()
+    if not stripped or stripped[-1] in _SENTENCE_END:
+        return stripped
+    cut = max(stripped.rfind(mark) for mark in _SENTENCE_END)
+    return stripped[:cut + 1].rstrip() if cut > len(stripped) - 600 and cut > 0 else stripped
 
 
 def normalize_recipe(text: str) -> dict[str, Any]:
@@ -159,19 +197,58 @@ class Chef:
     async def close(self) -> None:
         await self.client.close()
 
-    async def _request(self, system: str, messages: list[dict[str, str]], max_tokens: int | None = None) -> str:
+    async def _request(self, system: str, messages: list[dict[str, str]], max_tokens: int | None = None,
+                       finish: bool = False) -> str:
+        limit = max_tokens or self.max_tokens
         result = await self.client.messages.create(
-            model=self.model, system=system, max_tokens=max_tokens or self.max_tokens, messages=messages,
+            model=self.model, system=system, max_tokens=limit, messages=messages,
         )
-        parts = [block.text for block in result.content if getattr(block, "type", None) == "text"]
-        answer = "\n".join(parts).strip()
+        answer = self._text_of(result)
         if not answer:
             raise RuntimeError("Модель вернула пустой ответ")
-        return answer
+        if not finish:
+            return answer
+        for _ in range(MAX_CONTINUATIONS):
+            if getattr(result, "stop_reason", None) != "max_tokens":
+                return answer
+            logger.warning("Ответ упёрся в лимит %s токенов, дописываю продолжение", limit)
+            try:
+                result = await self.client.messages.create(
+                    model=self.model, system=system, max_tokens=limit,
+                    messages=messages + self._continue_turns(answer),
+                )
+            except APIError as exc:
+                logger.warning("Не удалось дописать ответ: %s", type(exc).__name__)
+                return trim_incomplete_tail(answer)
+            answer = join_continuation(answer, self._text_of(result, strip=False))
+        if getattr(result, "stop_reason", None) == "max_tokens":
+            logger.warning("Ответ остался оборванным после %s продолжений", MAX_CONTINUATIONS)
+            return trim_incomplete_tail(answer)
+        return answer.strip()
+
+    @staticmethod
+    def _text_of(result, strip: bool = True) -> str:
+        parts = [block.text for block in result.content if getattr(block, "type", None) == "text"]
+        text = "\n".join(parts)
+        return text.strip() if strip else text
+
+    @staticmethod
+    def _continue_turns(answer: str) -> list[dict[str, str]]:
+        return [{"role": "assistant", "content": answer.rstrip()},
+                {"role": "user", "content": CONTINUE_PROMPT}]
+
+    @staticmethod
+    async def _was_cut(stream) -> bool:
+        try:
+            final = await stream.get_final_message()
+        except Exception:  # признак обрыва — лишь подсказка, не причина сбоя ответа
+            return False
+        return getattr(final, "stop_reason", None) == "max_tokens"
 
     async def _stream(self, system: str, messages: list[dict[str, str]], on_partial) -> str:
         """Потоковый ответ; если поток не дал ни одного символа — обычный запрос."""
         received = ""
+        cut = False
         try:
             async with self.client.messages.stream(
                 model=self.model, system=system, max_tokens=self.max_tokens, messages=messages,
@@ -179,14 +256,35 @@ class Chef:
                 async for chunk in stream.text_stream:
                     received += chunk
                     await on_partial(received)
+                cut = await self._was_cut(stream)
         except Exception:
             if received:
                 raise
-            return await self._request(system, messages)
-        answer = received.strip()
-        if not answer:
-            return await self._request(system, messages)
-        return answer
+            return await self._request(system, messages, finish=True)
+        if not received.strip():
+            return await self._request(system, messages, finish=True)
+        for _ in range(MAX_CONTINUATIONS):
+            if not cut:
+                return received.strip()
+            logger.warning("Ответ упёрся в лимит %s токенов, дописываю продолжение", self.max_tokens)
+            base, tail, cut = received, "", False
+            try:
+                async with self.client.messages.stream(
+                    model=self.model, system=system, max_tokens=self.max_tokens,
+                    messages=messages + self._continue_turns(base),
+                ) as stream:
+                    async for chunk in stream.text_stream:
+                        tail += chunk
+                        await on_partial(join_continuation(base.rstrip(), tail))
+                    cut = await self._was_cut(stream)
+            except APIError as exc:  # ошибки показа (стоп пользователя) пробрасываем дальше
+                logger.warning("Не удалось дописать ответ: %s", type(exc).__name__)
+                return trim_incomplete_tail(received)
+            received = join_continuation(base.rstrip(), tail)
+        if cut:
+            logger.warning("Ответ остался оборванным после %s продолжений", MAX_CONTINUATIONS)
+            return trim_incomplete_tail(received)
+        return received.strip()
 
     async def answer(self, mode: str, text: str, preferences: dict, history: list[dict[str, str]],
                      cooking_context: str = "", on_partial=None) -> str:
@@ -194,13 +292,13 @@ class Chef:
         messages = history[-10:] + [{"role": "user", "content": text}]
         if on_partial is not None:
             return await self._stream(system, messages, on_partial)
-        return await self._request(system, messages)
+        return await self._request(system, messages, finish=True)
 
     async def recipe(self, text: str, preferences: dict) -> dict[str, Any]:
         output = await self._request(
             build_system("recipe", preferences) + "\n\n" + RECIPE_JSON,
             [{"role": "user", "content": text}],
-            max_tokens=min(max(self.max_tokens, 2600), 3500),
+            max_tokens=max(self.max_tokens, 2600),
         )
         return normalize_recipe(output)
 
@@ -217,7 +315,7 @@ class Chef:
         output = await self._request(
             build_system("plan", preferences) + "\n\n" + WEEKLY_JSON,
             [{"role": "user", "content": prompt}],
-            max_tokens=3000,
+            max_tokens=max(self.max_tokens, 3000),
         )
         return normalize_weekly_plan(output)
 
@@ -240,7 +338,7 @@ class Chef:
                 "ингредиенты, маркировку, сроки хранения или точное количество. "
                 "Назови уверенно видимые продукты отдельно от предположений. "
                 "Не записывай продукты в запасы без явного подтверждения пользователя.",
-            max_tokens=min(self.max_tokens, 1300),
+            max_tokens=self.max_tokens,
             messages=[{
                 "role": "user",
                 "content": [

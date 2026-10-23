@@ -267,7 +267,7 @@ docker compose logs -f bot
 | `DATABASE_URL` | SQLite | `postgresql+asyncpg://...` для продакшна |
 | `POSTGRES_PASSWORD` | — | Пароль PostgreSQL в Docker Compose |
 | `DAILY_AI_LIMIT` | 25 | Запросов к ИИ на человека в сутки (UTC), действует для всех |
-| `MAX_OUTPUT_TOKENS`, `MAX_INPUT_CHARS` | 1300, 3500 | Ограничения длины ответа и вопроса |
+| `MAX_OUTPUT_TOKENS`, `MAX_INPUT_CHARS` | 8192, 3500 | Длина ответа в токенах и вопроса в символах. Оборванный по длине ответ Сушеф дописывает сам (до двух продолжений) |
 | `FREE_TRIAL_REQUESTS` | 10 | Бесплатные запросы новому пользователю |
 | `STARS_PRICE`, `SUBSCRIPTION_DAYS` | 100, 30 | Цена в Stars и срок подписки |
 | `PAYMENTS_ENABLED` | true | `false` открывает все функции бесплатно |

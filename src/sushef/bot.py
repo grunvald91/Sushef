@@ -27,7 +27,10 @@ from .dish_process_cards_v2 import scale_source_ingredients
 from .config import Settings
 from .telegram_format import telegram_chunks
 from .telegram_modern import ChefWorking, send_recipe_card
-from .telegram_dialogue import DraftStreamer, GenerationStopped, send_dialogue, stop_stream, culinary_answer_has_recipe, recipe_context_tag
+from .telegram_dialogue import (
+    DraftStreamer, GenerationStopped, send_dialogue, stop_stream, culinary_answer_has_recipe,
+    dialogue_shopping_items, recipe_context_tag,
+)
 from .conversation_quality import correct_egg_followup
 from .storage import Storage
 from .support import GUIDE_TEXT, SUPPORT_PROMPT, inline_guide_text, open_tickets_text, reply_for_user, ticket_for_admin, ticket_from_admin_message
@@ -187,6 +190,20 @@ def dialogue_recipe_keyboard(tag: str) -> InlineKeyboardMarkup:
     """Под рецептом из диалога: в карточку, в избранное, в «Мои рецепты»."""
     return keyboard([
         [("🧾 В карточку и готовить", "dialogue:recipe:" + tag)],
+        [("❤️ В избранное", "dialogue:fav:" + tag), ("📖 В мои рецепты", "dialogue:save:" + tag)],
+        [("🏠 Главное меню", "view:main")],
+    ])
+
+
+def dialogue_recipe_inline_buttons(tag: str) -> list[tuple[str, str, str | None]]:
+    """Кнопки внутри rich-сообщения с рецептом (под ним остаются сохранение и меню)."""
+    return [("🛒 Список покупок", "dialogue:shop:" + tag, "primary"),
+            ("🧾 В карточку и готовить", "dialogue:recipe:" + tag, "primary")]
+
+
+def dialogue_recipe_compact_keyboard(tag: str) -> InlineKeyboardMarkup:
+    """Клавиатура под rich-рецептом, когда покупки и карточка уже внутри сообщения."""
+    return keyboard([
         [("❤️ В избранное", "dialogue:fav:" + tag), ("📖 В мои рецепты", "dialogue:save:" + tag)],
         [("🏠 Главное меню", "view:main")],
     ])
@@ -1707,8 +1724,12 @@ async def culinary_request(message: Message, from_user: User, text: str, mode: s
                 answer = (stop.partial.rstrip() or "…") + "\n\n⏹ Остановлено по Вашей просьбе."
             await working.stop()
             await storage.add_exchange(user_id, text, answer)
+            inline_buttons = rich_markup = None
             if mode in {"ask", "rescue"} and culinary_answer_has_recipe(answer):
-                response_markup = dialogue_recipe_keyboard(recipe_context_tag(text))
+                tag = recipe_context_tag(text)
+                response_markup = dialogue_recipe_keyboard(tag)
+                inline_buttons = dialogue_recipe_inline_buttons(tag)
+                rich_markup = dialogue_recipe_compact_keyboard(tag)
             else:
                 response_markup = (
                     cooking_keyboard() if mode == "cook" else
@@ -1717,6 +1738,7 @@ async def culinary_request(message: Message, from_user: User, text: str, mode: s
             await send_dialogue(
                 message, answer, response_markup,
                 rich_enabled=settings.telegram_rich_recipe_cards,
+                inline_buttons=inline_buttons, rich_markup=rich_markup,
             )
         if access == "trial":
             await send_trial_offer(message, user_id, storage, settings)
@@ -1867,6 +1889,31 @@ async def quick_action(
     preferences = await ai_preferences(storage, user_id, (await storage.get_user(user_id))["preferences"])
     await culinary_request(message, callback.from_user, text, mode, preferences,
                            storage, chef, settings)
+
+
+@router.callback_query(F.data.startswith("dialogue:shop:"))
+async def dialogue_shopping_list(callback: CallbackQuery, storage: Storage, settings: Settings) -> None:
+    """Список покупок из раздела «Продукты» ответа шефа: без ИИ и без расхода лимита."""
+    await callback.answer()
+    if not callback.from_user or not isinstance(callback.message, Message):
+        return
+    message = callback.message
+    if message.chat.type != "private":
+        return
+    tag = (callback.data or "").rsplit(":", 1)[-1]
+    found = find_dialogue_answer(await storage.get_history(callback.from_user.id, limit=40), tag)
+    items = dialogue_shopping_items(found[1]) if found else []
+    if not items:
+        await send_text(message, "Этот ответ уже выпал из истории диалога или в нём нет списка продуктов. "
+                        "Задайте вопрос ещё раз — и я всё соберу.", main_keyboard())
+        return
+    text = ("## 🛒 Список покупок\n\n" + "\n".join(f"- [ ] {item}" for item in items) +
+            "\n\nЭто полный список продуктов из рецепта. Что уже есть дома, просто пропустите.")
+    await send_dialogue(
+        message, text,
+        keyboard([[("🧾 В карточку и готовить", "dialogue:recipe:" + tag)], [("🏠 Главное меню", "view:main")]]),
+        rich_enabled=settings.telegram_rich_recipe_cards,
+    )
 
 
 @router.callback_query(F.data.startswith("dialogue:recipe:"))

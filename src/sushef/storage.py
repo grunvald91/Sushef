@@ -280,7 +280,7 @@ class Storage:
 
     async def add_exchange(self, user_id: int, question: str, reply: str) -> None:
         async with self.sessions() as db:
-            db.add_all([Conversation(user_id=user_id, role="user", content=question[:3500]), Conversation(user_id=user_id, role="assistant", content=reply[:6000])])
+            db.add_all([Conversation(user_id=user_id, role="user", content=question[:3500]), Conversation(user_id=user_id, role="assistant", content=reply)])
             await db.flush()
             stale = await db.scalars(select(Conversation.id).where(Conversation.user_id == user_id).order_by(Conversation.id.desc()).offset(40))
             old_ids = list(stale)
