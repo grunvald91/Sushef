@@ -13,11 +13,15 @@ from aiogram.types import (
     InputRichBlockExpandableBlockQuotation, InputRichBlockList, InputRichBlockListItem,
     InputRichBlockParagraph, InputRichBlockPreformatted, InputRichBlockSectionHeading,
     InputRichBlockTable, RichBlockTableCell, RichMessageButton, RichTextBold, RichTextCode,
+    RichTextItalic, RichTextUrl,
 )
 
 from .telegram_format import table_rows
 
-_INLINE = re.compile(r"\*\*([^*\n]+)\*\*|`([^`\n]+)`")
+_INLINE = re.compile(
+    r"\*\*([^*\n]+)\*\*|`([^`\n]+)`|(?<![*\w])\*([^*\s][^*\n]*?)\*(?![*\w])"
+    r"|\[([^\]\n]+)\]\((https://[^)\s]+)\)"
+)
 _HEADING = re.compile(r"^(#{1,4})\s+(.+)$")
 _BULLET = re.compile(r"^[-•*]\s+(.+)$")
 _CHECK = re.compile(r"^[-*]\s+\[( |x|X)\]\s+(.+)$")
@@ -32,15 +36,19 @@ MAX_BLOCKS = 120
 
 
 def rich_text(text: str):
-    """**жирный** и `код` (копируется нажатием) как типизированные фрагменты."""
+    """**жирный**, *курсив*, `код` (копируется нажатием) и [ссылка](https://…) как типизированные фрагменты."""
     parts, pos = [], 0
     for match in _INLINE.finditer(text):
         if match.start() > pos:
             parts.append(text[pos:match.start()])
         if match.group(1) is not None:
             parts.append(RichTextBold(text=match.group(1)))
-        else:
+        elif match.group(2) is not None:
             parts.append(RichTextCode(text=match.group(2)))
+        elif match.group(3) is not None:
+            parts.append(RichTextItalic(text=match.group(3)))
+        else:
+            parts.append(RichTextUrl(text=match.group(4), url=match.group(5)))
         pos = match.end()
     if pos < len(text):
         parts.append(text[pos:])
@@ -88,6 +96,7 @@ def markdown_to_blocks(markdown: str) -> list:
     blocks: list = []
     target = blocks  # сюда попадают новые блоки: корень или раскрывающийся раздел
     details: dict = {}
+    seen_steps = False  # советы сворачиваются только после шагов рецепта, а не в обычном ответе
     paragraph: list[str] = []
     quote: list[str] = []
     items: list[tuple[str, str, int | None]] = []  # kind, text, number
@@ -112,8 +121,10 @@ def markdown_to_blocks(markdown: str) -> list:
         target = blocks
 
     def flush_items() -> None:
+        nonlocal seen_steps
         if not items:
             return
+        seen_steps = seen_steps or any(kind == "ordered" for kind, _, _ in items)
         list_items = []
         for kind, text, number in items:
             extra = ({"has_checkbox": True, "is_checked": number == 1} if kind == "check" else
@@ -150,7 +161,7 @@ def markdown_to_blocks(markdown: str) -> list:
         elif heading := _HEADING.match(line):
             flush_paragraph(); flush_items(); flush_quote(); close_details()
             title = rich_text(heading.group(2).strip("* "))
-            if _TIPS.match(line):
+            if _TIPS.match(line) and seen_steps:
                 details.update(summary=title, blocks=[])
                 target = details["blocks"]
             else:

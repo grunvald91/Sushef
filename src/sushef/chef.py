@@ -38,8 +38,8 @@ def join_continuation(head: str, tail: str) -> str:
         return head
     if not head or head[-1].isspace() or tail[0].isspace():
         return head + tail
-    if head[-1].isalnum() and tail[0].isalnum():
-        return head + tail
+    if head[-1].isalnum() and tail[0].isalnum() and not tail[0].isupper():
+        return head + tail  # оборвалось посреди слова: продолжение начинается с недостающих букв
     if tail[0] in ".,;:!?)»…":
         return head + tail
     return head + " " + tail

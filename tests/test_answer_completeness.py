@@ -203,22 +203,18 @@ async def test_buttons_go_inside_message_before_tips_and_short_keyboard_below():
 
 
 @pytest.mark.asyncio
-async def test_html_fallback_keeps_full_keyboard_with_every_action():
+async def test_html_fallback_keeps_full_keyboard_with_every_action(monkeypatch):
     import sushef.telegram_dialogue as dialogue
 
     class Unsupported(Exception):
         pass
 
-    dialogue.TelegramBadRequest = Unsupported
+    monkeypatch.setattr(dialogue, "TelegramBadRequest", Unsupported)
     bot = SimpleNamespace(send_rich_message=AsyncMock(side_effect=Unsupported("no")))
     message = SimpleNamespace(bot=bot, chat=SimpleNamespace(id=1, type="private"), answer=AsyncMock())
     full, compact = object(), object()
-    try:
-        result = await send_dialogue(message, RICH_ANSWER, full,
-                                     inline_buttons=[("a", "b", None)], rich_markup=compact)
-    finally:
-        from aiogram.exceptions import TelegramBadRequest
-        dialogue.TelegramBadRequest = TelegramBadRequest
+    result = await send_dialogue(message, RICH_ANSWER, full,
+                                 inline_buttons=[("a", "b", None)], rich_markup=compact)
     assert result == "html"
     assert message.answer.await_args.kwargs["reply_markup"] is full
 
@@ -256,3 +252,21 @@ async def test_shopping_button_builds_checklist_without_ai_or_quota(monkeypatch)
     assert "- [ ] яйца — 4 шт" in text and "- [ ] сыр — 60 г" in text
     storage.use_quota.assert_not_awaited()
     storage.use_ai_request.assert_not_awaited()
+
+
+def test_tips_stay_visible_when_they_are_the_whole_answer():
+    # «Как спасти пересоленный суп» — советы и есть ответ, сворачивать их нельзя
+    names = kinds(markdown_to_blocks("Без паники!\n\n## 💡 Советы\n\n- Добавьте картофель.\n- Разбавьте бульоном."))
+    assert "Details" not in names and "SectionHeading" in names
+
+
+def test_italic_and_links_are_not_shown_as_raw_markup():
+    from sushef.rich_blocks import rich_text
+    parts = rich_text("Жарьте *на среднем* огне, **2 минуты**, см. [источник](https://example.org)")
+    names = [type(part).__name__ for part in parts if not isinstance(part, str)]
+    assert names == ["RichTextItalic", "RichTextBold", "RichTextUrl"]
+    assert rich_text("2 * 3 = 6") == "2 * 3 = 6"  # одиночная звёздочка остаётся текстом
+
+
+def test_new_sentence_after_cut_gets_a_space():
+    assert join_continuation("Всё готово", "Теперь подавайте") == "Всё готово Теперь подавайте"
