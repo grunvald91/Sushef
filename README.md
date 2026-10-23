@@ -263,7 +263,7 @@ docker compose logs -f bot
 | Переменная | По умолчанию | Назначение |
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN`, `CLAUDEHUB_API_KEY` | — | Обязательные секреты |
-| `CLAUDEHUB_BASE_URL`, `CLAUDEHUB_MODEL` | `https://api.claudehub.fun`, `claude-opus-4-7` | Провайдер и модель (смените на доступную в вашем кабинете) |
+| `CLAUDEHUB_BASE_URL`, `CLAUDEHUB_MODEL` | `https://api.claudehub.fun`, `claude-haiku-5-5` | Провайдер и модель (смените на доступную в вашем кабинете) |
 | `DATABASE_URL` | SQLite | `postgresql+asyncpg://...` для продакшна |
 | `POSTGRES_PASSWORD` | — | Пароль PostgreSQL в Docker Compose |
 | `DAILY_AI_LIMIT` | 25 | Запросов к ИИ на человека в сутки (UTC), действует для всех |
@@ -277,6 +277,7 @@ docker compose logs -f bot
 | `SUPPORT_DAILY_LIMIT` | 20 | Обращений в поддержку на человека в сутки |
 | `TELEGRAM_STREAM_ANSWERS` | true | Ответ по мере генерации |
 | `TELEGRAM_RICH_RECIPE_CARDS`, `TELEGRAM_DRAFT_PREVIEW` | true | Rich-карточки и временные черновики ожидания |
+| `TELEGRAM_SEEN_REACTION` | true | Реакция 👀 на сообщение, пока Сушеф готовит ответ |
 | `VISION_ENABLED`, `MAX_PHOTO_BYTES` | false, 4 МБ | Экспериментальный разбор фото (выключен) |
 | `TELEGRAM_PROXY_URL` | пусто | HTTP/SOCKS-прокси для Telegram, если прямого доступа нет |
 

@@ -7,11 +7,12 @@ retry automatically, avoiding duplicate recipes.
 """
 from __future__ import annotations
 
+import asyncio
 from html import escape
 import logging
 
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
-from aiogram.types import BotCommand, InputRichMessage, InlineKeyboardMarkup, Message
+from aiogram.types import BotCommand, InputRichMessage, InlineKeyboardMarkup, Message, ReactionTypeEmoji
 
 from .chef import format_recipe
 from .telegram_format import telegram_chunks
@@ -126,8 +127,84 @@ async def show_chef_thinking(message: Message, *, enabled: bool = True, mode: st
         )
         return True
     except (TelegramAPIError, AttributeError) as exc:
-        logger.debug("Temporary draft unavailable: %s", type(exc).__name__)
+        # warning, а не debug: иначе в проде не видно, что «думаю…» не доходит до людей
+        logger.warning("Temporary draft unavailable: %s: %s", type(exc).__name__, exc)
         return False
+
+
+class ChefWorking:
+    """Видимый сигнал «Сушеф услышал и работает» на всё время ожидания ИИ.
+
+    Три независимых сигнала, любой из них может не сработать, ответ от этого
+    не страдает (это украшение, а не часть ответа):
+    * реакция 👀 на сообщение пользователя — мгновенно, снимается, когда ответ готов;
+    * черновик «Обдумываю ответ…» (его потом подхватывает потоковый черновик
+      с тем же draft_id, если ClaudeHub отдаёт поток);
+    * «печатает…», которое поддерживается заново, пока ИИ не ответил: Telegram
+      гасит его через несколько секунд, а рецепты и меню готовятся дольше.
+    Ничего не повторяется автоматически с отправкой сообщений — только статусы.
+    """
+
+    def __init__(self, message: Message, *, mode: str = "ask", preferences: dict | None = None,
+                 draft_enabled: bool = True, reaction_enabled: bool = True,
+                 typing_interval: float = 4.0):
+        self.message = message
+        self.mode = mode
+        self.preferences = preferences
+        self.draft_enabled = draft_enabled
+        self.reaction_enabled = reaction_enabled
+        self.typing_interval = typing_interval
+        self._typing_task: asyncio.Task | None = None
+        self._reacted = False
+
+    async def start(self) -> None:
+        self._typing_task = asyncio.create_task(self._keep_typing())
+        await asyncio.gather(self._react(), self._draft())
+
+    async def stop(self) -> None:
+        task, self._typing_task = self._typing_task, None
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if self._reacted:
+            self._reacted = False
+            try:
+                await self.message.bot.set_message_reaction(
+                    chat_id=self.message.chat.id, message_id=self.message.message_id, reaction=[])
+            except Exception as exc:
+                logger.warning("Seen reaction was not cleared: %s: %s", type(exc).__name__, exc)
+
+    async def _keep_typing(self) -> None:
+        try:
+            while True:
+                await self.message.bot.send_chat_action(self.message.chat.id, "typing")
+                await asyncio.sleep(self.typing_interval)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Typing status stopped: %s: %s", type(exc).__name__, exc)
+
+    async def _react(self) -> None:
+        sender = getattr(self.message, "from_user", None)
+        # Реагируем только на сообщение человека, а не на собственное сообщение бота с кнопкой.
+        if not self.reaction_enabled or sender is None or getattr(sender, "is_bot", False):
+            return
+        try:
+            if self.message.chat.type != "private":
+                return
+            await self.message.bot.set_message_reaction(
+                chat_id=self.message.chat.id, message_id=self.message.message_id,
+                reaction=[ReactionTypeEmoji(emoji="👀")])
+            self._reacted = True
+        except Exception as exc:
+            logger.warning("Seen reaction unavailable: %s: %s", type(exc).__name__, exc)
+
+    async def _draft(self) -> None:
+        try:
+            await show_chef_thinking(self.message, enabled=self.draft_enabled,
+                                     mode=self.mode, preferences=self.preferences)
+        except Exception as exc:
+            logger.warning("Thinking draft failed: %s: %s", type(exc).__name__, exc)
 
 
 PUBLIC_COMMANDS = (

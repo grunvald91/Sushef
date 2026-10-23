@@ -213,3 +213,80 @@ def test_bot_api_10_3_disabled_previous_step_and_force_reply():
     assert later.inline_keyboard[0][0].callback_data == "cook:previous"
     custom = keyboard([[("Посмотреть примеры", "hello:styles")]], force_reply=True)
     assert custom.force_reply is True
+
+
+def working_message(*, sender_is_bot=False, **bot_methods):
+    bot = SimpleNamespace(
+        send_chat_action=AsyncMock(), set_message_reaction=AsyncMock(),
+        send_message_draft=AsyncMock(return_value=True),
+    )
+    for name, value in bot_methods.items():
+        setattr(bot, name, value)
+    return SimpleNamespace(
+        bot=bot, chat=SimpleNamespace(id=71, type="private"), message_id=153,
+        message_thread_id=None, from_user=SimpleNamespace(id=5, is_bot=sender_is_bot),
+    )
+
+
+@pytest.mark.asyncio
+async def test_working_indicator_shows_all_three_signals_and_cleans_up():
+    import asyncio
+    from sushef.telegram_modern import ChefWorking
+
+    message = working_message()
+    working = ChefWorking(message, mode="recipe", typing_interval=0.01)
+    await working.start()
+    await asyncio.sleep(0.08)
+    # «печатает…» повторяется, пока ИИ не ответил, а не один раз
+    assert message.bot.send_chat_action.await_count >= 3
+    reaction = message.bot.set_message_reaction.await_args.kwargs
+    assert reaction["chat_id"] == 71 and reaction["message_id"] == 153
+    assert reaction["reaction"][0].emoji == "👀"
+    assert message.bot.send_message_draft.await_args.kwargs["draft_id"] == 153
+    await working.stop()
+    # реакция снята, «печатает…» больше не обновляется
+    assert message.bot.set_message_reaction.await_args.kwargs["reaction"] == []
+    calls = message.bot.send_chat_action.await_count
+    await asyncio.sleep(0.05)
+    assert message.bot.send_chat_action.await_count == calls
+
+
+@pytest.mark.asyncio
+async def test_working_indicator_does_not_react_to_bots_own_message_or_when_disabled():
+    from sushef.telegram_modern import ChefWorking
+
+    own = working_message(sender_is_bot=True)
+    working = ChefWorking(own, typing_interval=0.01)
+    await working.start()
+    await working.stop()
+    own.bot.set_message_reaction.assert_not_awaited()
+    own.bot.send_message_draft.assert_awaited()  # «думаю…» всё равно показан
+
+    off = working_message()
+    working = ChefWorking(off, draft_enabled=False, reaction_enabled=False, typing_interval=0.01)
+    await working.start()
+    await working.stop()
+    off.bot.set_message_reaction.assert_not_awaited()
+    off.bot.send_message_draft.assert_not_awaited()
+    off.bot.send_chat_action.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_working_indicator_failures_never_break_the_answer():
+    from sushef.telegram_modern import ChefWorking
+
+    boom = AsyncMock(side_effect=RuntimeError("telegram is down"))
+    message = working_message(send_chat_action=boom, set_message_reaction=boom,
+                              send_message_draft=boom)
+    working = ChefWorking(message, typing_interval=0.01)
+    await working.start()   # не бросает
+    await working.stop()    # не бросает
+
+
+def test_default_model_is_haiku_and_seen_reaction_is_on():
+    from sushef.config import Settings
+
+    settings = Settings(telegram_bot_token="1234567890:token", claudehub_api_key="12345678",
+                        _env_file=None)
+    assert settings.claudehub_model == "claude-haiku-5-5"
+    assert settings.telegram_seen_reaction is True

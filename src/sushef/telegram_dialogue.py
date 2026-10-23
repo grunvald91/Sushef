@@ -199,5 +199,6 @@ class DraftStreamer:
             )
             self.sent += 1
         except Exception as exc:  # черновик — украшение, не причина сбоя ответа
-            logger.debug("Streaming draft disabled: %s", type(exc).__name__)
+            # warning: иначе в проде не видно, что поток ответа не доходит до людей
+            logger.warning("Streaming draft disabled: %s: %s", type(exc).__name__, exc)
             self.enabled = False

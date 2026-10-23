@@ -26,7 +26,7 @@ from .technique_catalog import CATEGORIES, technique_context
 from .dish_process_cards_v2 import scale_source_ingredients
 from .config import Settings
 from .telegram_format import telegram_chunks
-from .telegram_modern import send_recipe_card, show_chef_thinking
+from .telegram_modern import ChefWorking, send_recipe_card, show_chef_thinking
 from .telegram_dialogue import DraftStreamer, GenerationStopped, send_dialogue, stop_stream, culinary_answer_has_recipe, recipe_context_tag
 from .conversation_quality import correct_egg_followup
 from .storage import Storage
@@ -1555,8 +1555,11 @@ async def culinary_request(message: Message, from_user: User, text: str, mode: s
     if not access:
         return
 
+    working = ChefWorking(message, mode=mode, preferences=preferences,
+                          draft_enabled=settings.telegram_draft_preview,
+                          reaction_enabled=settings.telegram_seen_reaction)
+    await working.start()
     try:
-        await message.bot.send_chat_action(message.chat.id, "typing")
         if mode in {"recipe", "pantry_recipe"} or mode.startswith(("weekly:", "catalog:")):
             reference = None
             if mode.startswith("catalog:"):
@@ -1719,6 +1722,8 @@ async def culinary_request(message: Message, from_user: User, text: str, mode: s
             "Ваши настройки сохранены.",
             main_keyboard(),
         )
+    finally:
+        await working.stop()
 
 
 def find_dialogue_answer(history: list[dict[str, str]], tag: str) -> tuple[str, str] | None:
@@ -1774,8 +1779,11 @@ async def save_dialogue_recipe(
         return
     question, answer = found
     prefs = (await storage.get_user(user_id))["preferences"]
+    working = ChefWorking(message, mode="recipe", preferences=prefs,
+                          draft_enabled=settings.telegram_draft_preview,
+                          reaction_enabled=settings.telegram_seen_reaction)
+    await working.start()
     try:
-        await message.bot.send_chat_action(message.chat.id, "typing")
         recipe = await chef.recipe(SUMMARY_PROMPT + question[:1500] +
                                    "\nСовет шефа:\n" + answer[:5000], prefs)
     except RecipeFormatError:
@@ -1787,6 +1795,8 @@ async def save_dialogue_recipe(
         await send_text(message, "Сейчас не удалось сохранить рецепт. Попробуйте позже.",
                         main_keyboard())
         return
+    finally:
+        await working.stop()
     recipe["dialogue_tag"] = tag
     archive_id = await storage.store_recipe(user_id, recipe, favorite=favorite)
     await send_text(message, ("❤️ Выжимка рецепта сохранена в избранное и «Мои рецепты»."
@@ -1892,8 +1902,11 @@ async def convert_dialogue_to_recipe(
         "\nПредыдущий ответ (черновик, не авторитетный источник):\n" +
         last_answer[:4500]
     )
+    working = ChefWorking(message, mode="recipe", preferences=prefs,
+                          draft_enabled=settings.telegram_draft_preview,
+                          reaction_enabled=settings.telegram_seen_reaction)
+    await working.start()
     try:
-        await message.bot.send_chat_action(message.chat.id, "typing")
         recipe = await chef.recipe(source, prefs)
         archive_id = await storage.set_recipe(callback.from_user.id, recipe)
         await storage.add_exchange(
@@ -1914,6 +1927,8 @@ async def convert_dialogue_to_recipe(
         logger.warning("Recipe conversion failed: %s", type(exc).__name__)
         await send_text(message, "Сейчас не удалось оформить карточку. "
                         "Ваши рецепты и настройки не потеряны.", main_keyboard())
+    finally:
+        await working.stop()
 
 
 @router.callback_query()

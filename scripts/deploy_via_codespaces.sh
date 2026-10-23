@@ -105,7 +105,7 @@ from pathlib import Path
 
 token = os.environ["TELEGRAM_BOT_TOKEN"].strip()
 key = os.environ["CLAUDEHUB_API_KEY"].strip()
-model = os.environ.get("CLAUDEHUB_MODEL", "claude-opus-4-7").strip()
+model = os.environ.get("CLAUDEHUB_MODEL", "claude-haiku-5-5").strip()
 url = os.environ.get("CLAUDEHUB_BASE_URL", "https://api.claudehub.fun").strip()
 password = os.environ.get("POSTGRES_PASSWORD", "").strip() or (
     secrets.token_hex(28)
