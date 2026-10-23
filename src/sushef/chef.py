@@ -298,7 +298,7 @@ class Chef:
         output = await self._request(
             build_system("recipe", preferences) + "\n\n" + RECIPE_JSON,
             [{"role": "user", "content": text}],
-            max_tokens=min(max(self.max_tokens, 2600), 3500),
+            max_tokens=max(self.max_tokens, 2600),
         )
         return normalize_recipe(output)
 
@@ -315,7 +315,7 @@ class Chef:
         output = await self._request(
             build_system("plan", preferences) + "\n\n" + WEEKLY_JSON,
             [{"role": "user", "content": prompt}],
-            max_tokens=3000,
+            max_tokens=max(self.max_tokens, 3000),
         )
         return normalize_weekly_plan(output)
 
@@ -338,7 +338,7 @@ class Chef:
                 "ингредиенты, маркировку, сроки хранения или точное количество. "
                 "Назови уверенно видимые продукты отдельно от предположений. "
                 "Не записывай продукты в запасы без явного подтверждения пользователя.",
-            max_tokens=min(self.max_tokens, 1300),
+            max_tokens=self.max_tokens,
             messages=[{
                 "role": "user",
                 "content": [

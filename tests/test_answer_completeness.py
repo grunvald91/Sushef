@@ -131,7 +131,7 @@ async def test_non_stream_answer_is_continued_too():
 
 
 def test_default_answer_budget_fits_a_full_recipe():
-    assert Settings.model_fields["max_output_tokens"].default >= 2400
+    assert Settings.model_fields["max_output_tokens"].default >= 8000
 
 
 def test_prompt_keeps_topic_and_asks_for_products_after_instant_recipe():
@@ -141,5 +141,6 @@ def test_prompt_keeps_topic_and_asks_for_products_after_instant_recipe():
     assert "рецепт дай сразу, без предварительного допроса" in text
     assert "какие продукты сейчас под рукой" in text
     assert "ДОЛЖЕН БЫТЬ ЗАКОНЧЕННЫЙ ОТВЕТ" in text
+    assert "пиши компактно" not in text  # лишних ограничений длины в промпте нет
     # старое правило «без встречных вопросов» больше не отменяет вопрос к открытому запросу
     assert "Если ответ очевиден, ответь без встречных вопросов" not in text
