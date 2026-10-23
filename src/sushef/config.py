@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     claudehub_base_url: str = "https://api.claudehub.fun"
     claudehub_model: str = "claude-haiku-5-5"
     database_url: str = "sqlite+aiosqlite:///./sushef.db"
-    max_output_tokens: int = Field(default=1300, ge=256, le=4096)
+    max_output_tokens: int = Field(default=2600, ge=256, le=8192)
     daily_ai_limit: int = Field(default=25, ge=1, le=1000)
     max_input_chars: int = Field(default=3500, ge=200, le=12000)
     telegram_rich_recipe_cards: bool = True  # Bot API 10.3; HTML fallback on unsupported server
